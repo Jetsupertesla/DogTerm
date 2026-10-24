@@ -8,3 +8,6 @@ __pycache__/
 !.env.example
 scratch/
 pybullet_build.log
+
+# Person 3 (optimiser / RSI) run artefacts
+runs/

@@ -1,0 +1,5 @@
+# Person 3 (optimiser / RSI) extras, on top of requirements.txt
+openai>=1.30
+python-dotenv>=1.0
+scipy>=1.10
+pydantic>=2.5
