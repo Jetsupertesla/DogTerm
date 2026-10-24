@@ -130,6 +130,25 @@ for _leg in LEG_ORDER:
 THIGH_VEC_FWD_UP = (-0.1422, -0.20833)
 CALF_VEC_FWD_UP = (-0.022, -0.25)
 
+# Frontal-plane geometry for the hip (ab/adduction) joint, measured in PyBullet
+# (tests/test_grid.py re-checks it).  The whole sagittal leg sits this far
+# outboard of the abduction axis, independent of thigh/calf angles; the URDF is
+# not left/right symmetric.  A positive hip angle swings the foot outward on
+# both sides (the right legs' axes point the other way).
+HIP_LATERAL_OFFSET_M: dict[str, float] = {
+    "front_left": 0.035165, "front_right": 0.032875,
+    "rear_left": 0.035165, "rear_right": 0.032875,
+}
+# +1 = left (+y) side, -1 = right: converts a body-frame lateral foot offset
+# (+y = left) into the leg's "outward" direction.
+LEG_SIDE: dict[str, int] = {"front_left": 1, "front_right": -1, "rear_left": 1, "rear_right": -1}
+# Abduction-joint position relative to the base, body frame (x fwd, y left), m.
+# Used to turn a yaw-rate command into per-leg stance strokes.
+HIP_POS_BODY_XY: dict[str, tuple[float, float]] = {
+    "front_left": (0.19909, 0.08171), "front_right": (0.19909, -0.08171),
+    "rear_left": (-0.2382, 0.08171), "rear_right": (-0.2382, -0.08171),
+}
+
 # Fall detection thresholds.
 FALL_MIN_BASE_HEIGHT_M = 0.20
 FALL_MAX_TILT_RAD = math.radians(50.0)

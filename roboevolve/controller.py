@@ -39,6 +39,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 from . import robot_config as rc
 
 # Baseline chosen from measured sweeps: walks ~4.5 m in 12 s without falling
@@ -138,6 +140,28 @@ def leg_ik(fwd: float, up: float) -> tuple[float, float]:
     return thigh, calf
 
 
+def leg_ik_3d(leg: str, fwd: float, lateral: float, up: float) -> tuple[float, float, float]:
+    """Hip/thigh/calf angles placing ``leg``'s foot at (fwd, lateral, up).
+
+    Coordinates are relative to the foot's standing position projected onto
+    the hip-pitch frame: ``lateral`` is a body-frame offset (+ = left) from the
+    standing foot line, ``fwd``/``up`` as in :func:`leg_ik`.
+
+    The leg plane sits ``HIP_LATERAL_OFFSET_M`` outboard of the abduction
+    axis, so in the frontal plane the foot is at ``R(hip) @ (w, -D)`` with ``D``
+    the sagittal depth.  Solve that for ``hip`` and ``D``, then hand
+    ``(fwd, -D)`` to the existing sagittal IK.  With ``lateral = 0`` this gives
+    hip = 0 and D = -up, i.e. the original planar gait.
+    """
+    w = rc.HIP_LATERAL_OFFSET_M[leg]
+    out = w + rc.LEG_SIDE[leg] * lateral
+    rho = math.hypot(out, up)
+    depth = math.sqrt(max(rho * rho - w * w, 1e-9))
+    hip = math.atan2(out, -up) - math.atan2(w, depth)
+    thigh, calf = leg_ik(fwd, -depth)
+    return hip, thigh, calf
+
+
 # ---------------------------------------------------------------------------
 # Motor command record (the unit that passes through the fault hook)
 # ---------------------------------------------------------------------------
@@ -210,9 +234,48 @@ class GaitController:
             targets[name] = float(min(max(targets[name], lo), hi))  # scalar clip; np.clip is ~20x slower here
         return targets
 
-    def motor_commands(self, t: float, joint_map: dict[str, int]) -> list[MotorCommand]:
-        """Build the 12 MotorCommands (in MOTOR_NAMES order) for time ``t``."""
-        targets = self.joint_targets(t)
+    def steered_joint_targets(self, t: float, strokes: dict[str, tuple[float, float]],
+                              height: float, lift: dict[str, float] | None = None) -> dict[str, float]:
+        """Joint targets for an omnidirectional trot (used by grid.CellNavigator).
+
+        ``strokes[leg] = (sx, sy)`` is the leg's full stance stroke in the body
+        frame (m, x forward, y left): the foot slides from ``+s/2`` to ``-s/2``
+        during stance, pushing the body along ``+s``; the swing returns along
+        the same line on the usual cycloid, ``height`` above nominal.  A
+        negative ``sx`` walks backward, a nonzero ``sy`` side-steps.  The
+        caller owns ramps and steering; there is no GAIT_START_S hold here.
+        ``lift[leg]`` (m, + = foot closer to the hip) shifts a foot's nominal
+        height, e.g. for the navigator's level-body feedback.
+
+        :meth:`joint_targets` (the forward-only gait the optimiser tunes) is
+        deliberately left as it was so existing results stay bit-identical.
+        """
+        p = self.params
+        targets: dict[str, float] = {}
+        for i, leg in enumerate(rc.LEG_ORDER):
+            f0, u0 = self.nominal_feet[leg]
+            phi = (p["frequency_hz"] * t + p["phase_offsets"][i]) % 1.0
+            k, dz = self._foot_offset(phi, 1.0, height)
+            sx, sy = strokes[leg]
+            if lift:
+                dz += lift[leg]
+            hip, thigh, calf = leg_ik_3d(leg, f0 + k * sx, k * sy, u0 + dz)
+            targets[f"{leg}_hip"] = hip
+            targets[f"{leg}_thigh"] = thigh
+            targets[f"{leg}_calf"] = calf
+
+        for name, (lo, hi) in rc.JOINT_LIMITS_RAD.items():
+            targets[name] = float(np.clip(targets[name], lo, hi))
+        return targets
+
+    def motor_commands(self, t: float, joint_map: dict[str, int],
+                       targets: dict[str, float] | None = None) -> list[MotorCommand]:
+        """Build the 12 MotorCommands (in MOTOR_NAMES order) for time ``t``.
+
+        ``targets`` overrides the forward gait (e.g. from steered_joint_targets).
+        """
+        if targets is None:
+            targets = self.joint_targets(t)
         return [
             MotorCommand(
                 name=name,
