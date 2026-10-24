@@ -55,14 +55,26 @@ The GUI (`scene.py`) is a robotics science lab with a game-style quest layer:
 `--hold N` keeps each set's final frame on screen for N seconds (default 4).
 
 Demo sets:
-- **Set 2 (injury):** defaults to a dead front-left calf (`torque_loss`, strength 0) from t = 0. It runs the full 20 s even after a fall (`--injured-duration`, `--fault-start`, `--fault-strength`).
+- **Set 2 (injury):** defaults to a dead front-left calf (`torque_loss`, strength 0) from t = 0 (`--injured-duration`, `--fault-start`, `--fault-strength`).
+  - Injured stages keep running after a fall, and end once the fallen robot has stayed within 2 cm of one spot for 2 s (`--still-stop`, 0 = always run the full duration).
+  - This uses `simulate(..., stop_when_still_s=...)`, which is off by default.
+  - With the default injury, the dog falls at 2.6 s and the stage ends at 7.1 s.
 - **Measured with default gait params:** healthy, 4.53 m in 12 s; injured, 0.80 m and a fall at 2.6 s.
 - **Milder injuries for comparison:** a calf at 30% strength still covers 7.6 m in 20 s, and thigh faults are mostly tolerated.
-- **Stage 3 (adapted gait):** replays the gait in `roboevolve/data/adapted_gait.json` with the same injury for the same 20 s.
-  - Regenerate the gait with `python -m roboevolve.make_adapted_gait` (`--budget`, `--restarts`). It runs Person 3's `optimise_controller` under the demo's conditions: motor dead from t = 0, 20 s trials, scored on the demo start plus a noisy start. It then re-checks the result with `simulate()` exactly as the demo will run it.
-  - Current gait (4 restarts × ≤80 sims, numeric proposer, no LLM): **1.88 m, fell at 18.2 s**, against 0.80 m and a fall at 2.6 s for the unadapted gait. It is a clear improvement but not yet a full recovery.
-  - Why not reuse the gait from `demo_rsi`: those gaits were tuned on 8 s trials. In 20 s demo conditions they fell (3.3 s, 2.2 s, and 18.2 s for the three seeds).
+- **Stage 3 (adapted gait):** replays the gait in `roboevolve/data/adapted_gait.json` with the same injury for 20 s.
+  - Current gait: a slow **bound** (front legs together, rear legs together) found by `python -m roboevolve.make_adapted_gait` (default `--method robust`, about 30 min). The search:
+    1. tries 400 random gaits over `PARAM_BOUNDS` and the gait library (trot, pace, bound, walk);
+    2. refines locally around the best ones;
+    3. refines for robustness, scoring each candidate on the demo start plus 3 perturbed starts so the worst case dominates, with a sideways-drift penalty.
+
+    Every trial is a 20 s run of `simulate()` with the calf dead from t = 0.
+  - Result in demo conditions: **3.46 m in 20 s, no fall**, 0.17 m sideways drift, tilt 0.023 rad RMS. `evaluation.py` rates it a success.
+  - Robustness: **0 falls in 16 held-out perturbed starts** (3.09–3.42 m).
+  - It is specialised to the injury: on a healthy robot the same gait covers only 0.94 m.
+  - Person 3's optimiser (`--method person3`, numeric proposer, no LLM) under the same conditions found an improvement (1.88 m, fell at 18.2 s), but no gait that stays up for 20 s. Its early stopping ends each restart after about 60–130 sims.
+  - Gaits from `demo_rsi` were tuned on 8 s trials and fell in 20 s demo conditions.
   - Stage 3 is skipped, with a message, if the gait file is missing or was made for a different injury.
+  - Banners compare speeds (distance / time), not raw distances, because the stages have different lengths.
 
 ## Headless API
 

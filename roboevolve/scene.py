@@ -19,36 +19,22 @@ from __future__ import annotations
 
 import math
 import os
-import tempfile
+import sys
 
 import numpy as np
 
+
 from . import robot_config as rc
+from . import scene_textures as tx
+from .scene_lab import CYAN, GREEN, WHITE, LabBuilder
 
-# --- palette (RGB 0..1) -------------------------------------------------------
+# overlay colours (RGB 0..1); the lab's own palette lives in scene_lab
 BG = (0.80, 0.84, 0.88)          # reads as a bright lab ceiling beyond the walls
-WALL = (0.88, 0.90, 0.93)
-WAINSCOT = (0.12, 0.45, 0.52)
-CABINET = (0.24, 0.29, 0.35)
-WORKTOP = (0.96, 0.96, 0.96)
-STEEL = (0.70, 0.73, 0.77)
-LANE = (0.80, 0.82, 0.85)
-HAZARD = (1.0, 0.80, 0.08)
-BLACK = (0.08, 0.08, 0.09)
-CYAN = (0.0, 0.75, 0.95)
-GREEN = (0.15, 0.85, 0.35)
 GOLD = (1.0, 0.78, 0.12)
-WHITE = (1.0, 1.0, 1.0)
-INK = (0.10, 0.14, 0.22)
 FAULT_RED = (0.95, 0.10, 0.10)
+AMBER = (1.0, 0.65, 0.05)
 OVERLAY_DEPTH = 0.5  # metres in front of the camera for screen-pinned UI
-
-TRACK_START_X = -1.0
-TRACK_LENGTH_M = 14.0
-TRACK_HALF_WIDTH_M = 0.45
-BACK_WALL_Y = 3.6
-ROOM_X = (-6.0, 18.0)
-WALL_H = 3.6
+LED_BLINKS_PER_FRAME = 3
 
 DEFAULT_QUEST = {
     "title": "QUEST: FIELD TRIAL",
@@ -57,34 +43,54 @@ DEFAULT_QUEST = {
     "stages": [{"name": "Test walk", "duration_s": 12.0, "rgb": (0.0, 0.75, 0.95), "result": None}],
 }
 
-WINDOW_OPTIONS = (
-    "--width=1280 --height=720 "
-    f"--background_color_red={BG[0]} --background_color_green={BG[1]} "
-    f"--background_color_blue={BG[2]}"
-)
+DEFAULT_WINDOW = (1280, 720)
+MAX_WINDOW = (2560, 1440)
 
 
-def _floor_texture_path() -> str:
-    """Write (once) a 4x4 block of light lab floor tiles with grout lines."""
-    path = os.path.join(tempfile.gettempdir(), "roboevolve_labfloor_v1.png")
-    if os.path.exists(path):
-        return path
-    n, tiles = 512, 4
-    rng = np.random.default_rng(3)
-    img = np.zeros((n, n, 3))
-    step = n // tiles
-    for i in range(tiles):
-        for j in range(tiles):
-            shade = 0.80 + rng.uniform(-0.025, 0.025)
-            img[i * step:(i + 1) * step, j * step:(j + 1) * step] = (shade, shade + 0.01, shade + 0.025)
-    speckle = rng.normal(0, 0.012, (n, n, 1))
-    img += speckle
-    yy, xx = np.mgrid[0:n, 0:n]
-    grout = ((xx % step) < 3) | ((yy % step) < 3)
-    img[grout] = (0.62, 0.64, 0.67)
-    import matplotlib.image
-    matplotlib.image.imsave(path, np.clip(img, 0, 1))
-    return path
+def _screen_size() -> tuple[int, int] | None:
+    """Logical size of the main display (macOS / Windows), or None if unknown."""
+    try:
+        import ctypes
+        if os.name == "nt":
+            user32 = ctypes.windll.user32
+            return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        if sys.platform == "darwin":
+            class CGRect(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double),
+                            ("w", ctypes.c_double), ("h", ctypes.c_double)]
+            cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            cg.CGMainDisplayID.restype = ctypes.c_uint32
+            cg.CGDisplayBounds.restype = CGRect
+            cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+            r = cg.CGDisplayBounds(cg.CGMainDisplayID())
+            return int(r.w), int(r.h)
+    except Exception:
+        pass
+    return None
+
+
+def window_size() -> tuple[int, int]:
+    """GUI window size: ``ROBOEVOLVE_WINDOW=WxH`` if set, else the largest 16:9 window that fits the screen."""
+    env = os.environ.get("ROBOEVOLVE_WINDOW", "")
+    try:
+        w, h = (int(v) for v in env.lower().split("x"))
+        return max(w, 320), max(h, 240)
+    except ValueError:
+        if env:
+            print(f"ignoring ROBOEVOLVE_WINDOW={env!r} (expected e.g. 1920x1080)")
+    screen = _screen_size()
+    if not screen:
+        return DEFAULT_WINDOW
+    w = min(screen[0] * 0.92, screen[1] * 0.86 * 16 / 9, MAX_WINDOW[0])
+    w = max(int(w) // 16 * 16, DEFAULT_WINDOW[0])
+    return w, w * 9 // 16
+
+
+def window_options() -> str:
+    w, h = window_size()
+    return (f"--width={w} --height={h} "
+            f"--background_color_red={BG[0]} --background_color_green={BG[1]} "
+            f"--background_color_blue={BG[2]}")
 
 
 def _bring_window_to_front() -> bool:
@@ -137,7 +143,8 @@ class GuiScene:
     HUD_EVERY_S = 0.2
     TRAIL_EVERY_S = 0.2
 
-    def __init__(self, sim, label: str | None = None, label_rgb=CYAN, quest: dict | None = None):
+    def __init__(self, sim, label: str | None = None, label_rgb=CYAN, quest: dict | None = None,
+                 fault_motor: str | None = None):
         self.sim = sim
         p = self.p = sim.client
         p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
@@ -146,24 +153,25 @@ class GuiScene:
             p.configureDebugVisualizer(getattr(p, flag), 0)
         p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
         try:
-            p.configureDebugVisualizer(lightPosition=[4.0, -3.0, 9.0], shadowMapResolution=4096,
+            p.configureDebugVisualizer(lightPosition=[4.0, -3.0, 9.0], shadowMapResolution=8192,
                                        shadowMapWorldSize=16)
         except TypeError:  # older PyBullet without these keywords
             pass
 
-        tex = p.loadTexture(_floor_texture_path())
-        p.changeVisualShape(sim.plane_id, -1, textureUniqueId=tex, rgbaColor=[1, 1, 1, 1])
+        self.label, self.label_rgb = label, label_rgb
+        # quest state (stage results are supplied by the caller, e.g. demo_walk)
+        self.quest = quest or {**DEFAULT_QUEST, "title": label or DEFAULT_QUEST["title"]}
+        self.fault_motor = fault_motor
 
-        self._vis_cache: dict = {}
-        self._build_room()
-        self._build_benches()
-        self._build_wall_features()
-        self._build_track()
-        self._build_arms()
+        self.lab = LabBuilder(p)
+        p.changeVisualShape(sim.plane_id, -1, textureUniqueId=self.lab.texture(tx.floor_texture()),
+                            rgbaColor=[1, 1, 1, 1])
+        self.props = self.lab.build()
+        self.status_tex = self._load_status_textures()
+        self.status_state = None
         self._build_quest_objects()
         p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
 
-        self.label, self.label_rgb = label, label_rgb
         self.window_raised = False
         self.last_frame_t = -1.0
         self.trail_prev = None
@@ -173,11 +181,7 @@ class GuiScene:
         self.text_ids: dict[str, int] = {}
         self.text_sig: dict[str, tuple] = {}
         self.last_hud_t = -1.0
-        self.hud_line = ("", WHITE)
         self.last_trail_t = -1.0
-
-        # quest state (stage results are supplied by the caller, e.g. demo_walk)
-        self.quest = quest or {**DEFAULT_QUEST, "title": label or DEFAULT_QUEST["title"]}
         self.fault_seen = False
         self.intro_shown = False
         self.fell_seen = False
@@ -186,35 +190,10 @@ class GuiScene:
         self.live = (0.0, 0.0)
         self.panel_id = None
         self._frame = None
+        self.led_rng = np.random.default_rng(0)  # visual only; never touches the physics RNG
+        self.beacon_rgb = None
 
     # ------------------------------------------------------------------ helpers
-    def _vis(self, kind, size, rgba, specular=(0.3, 0.3, 0.3)):
-        key = (kind, size, tuple(rgba), specular)
-        if key not in self._vis_cache:
-            p = self.p
-            if kind == "box":
-                v = p.createVisualShape(p.GEOM_BOX, halfExtents=size, rgbaColor=rgba, specularColor=specular)
-            elif kind == "cyl":
-                v = p.createVisualShape(p.GEOM_CYLINDER, radius=size[0], length=size[1], rgbaColor=rgba,
-                                        specularColor=specular)
-            else:
-                v = p.createVisualShape(p.GEOM_SPHERE, radius=size[0], rgbaColor=rgba, specularColor=specular)
-            self._vis_cache[key] = v
-        return self._vis_cache[key]
-
-    def _body(self, vis, pos, orn=(0, 0, 0, 1)):
-        return self.p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=vis,
-                                      basePosition=pos, baseOrientation=orn)
-
-    def _box(self, center, half, rgb, alpha=1.0, specular=(0.3, 0.3, 0.3)):
-        return self._body(self._vis("box", tuple(half), [*rgb, alpha], specular), center)
-
-    def _cyl(self, center, radius, length, rgb, alpha=1.0, specular=(0.5, 0.5, 0.5)):
-        return self._body(self._vis("cyl", (radius, length), [*rgb, alpha], specular), center)
-
-    def _sphere(self, center, radius, rgb, alpha=1.0, specular=(0.8, 0.8, 0.8)):
-        return self._body(self._vis("sph", (radius,), [*rgb, alpha], specular), center)
-
     def _text(self, key, txt, pos, rgb, size, parent=-1):
         """Create or update a named debug text item; no-op if nothing changed.
 
@@ -231,198 +210,17 @@ class GuiScene:
             kw["parentObjectUniqueId"] = parent
         self.text_ids[key] = self.p.addUserDebugText(txt, list(pos), **kw)
 
-    # ------------------------------------------------------------- the room
-    def _build_room(self):
-        x0, x1 = ROOM_X
-        cx, hx = (x0 + x1) / 2, (x1 - x0) / 2
-        y = BACK_WALL_Y
-        # back wall, wainscot band, skirting, chair rail
-        self._box([cx, y + 0.05, WALL_H / 2], [hx, 0.05, WALL_H / 2], WALL)
-        self._box([cx, y - 0.005, 0.55], [hx, 0.01, 0.55], WAINSCOT)
-        self._box([cx, y - 0.02, 0.05], [hx, 0.02, 0.05], BLACK)
-        self._box([cx, y - 0.02, 1.12], [hx, 0.02, 0.015], STEEL)
-        # end walls
-        for x in (x0, x1):
-            self._box([x, 0, WALL_H / 2], [0.05, (y + 6) / 2, WALL_H / 2], WALL)
-        # ceiling light panels (visible when the camera sways)
-        for x in np.arange(x0 + 2, x1 - 1, 3.0):
-            self._box([x, 0.0, WALL_H - 0.02], [0.6, 0.18, 0.02], WHITE)
-            self._box([x, BACK_WALL_Y - 1.5, WALL_H - 0.02], [0.6, 0.18, 0.02], WHITE)
-
-    def _build_benches(self):
-        """Lab bench run along the back wall, stocked with equipment."""
-        y = BACK_WALL_Y - 0.40
-        x0, x1 = -4.5, 16.5
-        cx, hx = (x0 + x1) / 2, (x1 - x0) / 2
-        self._box([cx, y, 0.44], [hx, 0.35, 0.44], CABINET)          # cabinets
-        self._box([cx, y - 0.30, 0.10], [hx, 0.06, 0.10], BLACK)     # toe kick shadow
-        self._box([cx, y, 0.905], [hx + 0.02, 0.38, 0.025], WORKTOP)  # worktop
-        for x in np.arange(x0 + 0.5, x1, 1.0):                       # cabinet doors / handles
-            self._box([x, y - 0.355, 0.5], [0.46, 0.005, 0.36], (0.29, 0.35, 0.42))
-            self._box([x + 0.35, y - 0.365, 0.62], [0.01, 0.008, 0.08], STEEL)
-
-        top = 0.93
-        rng = np.random.default_rng(11)  # fixed layout every run
-        liquids = [(0.1, 0.6, 1.0), (0.2, 0.9, 0.4), (1.0, 0.3, 0.5), (1.0, 0.75, 0.1), (0.6, 0.3, 1.0)]
-        for i, x in enumerate(np.arange(-4.0, 16.0, 1.6)):
-            kind = i % 5
-            if kind == 0:
-                self._beakers(x, y, top, rng, liquids)
-            elif kind == 1:
-                self._monitor(x, y, top, i)
-            elif kind == 2:
-                self._flasks(x, y, top, liquids, i)
-            elif kind == 3:
-                self._microscope(x, y, top)
-            else:
-                self._tube_rack(x, y, top, liquids)
-
-    def _beakers(self, x, y, top, rng, liquids):
-        for k in range(3):
-            bx = x - 0.25 + 0.25 * k
-            r, h = 0.05 + 0.01 * k, 0.12 + 0.03 * k
-            col = liquids[int(rng.integers(len(liquids)))]
-            fill = h * rng.uniform(0.4, 0.75)
-            self._cyl([bx, y, top + fill / 2], r * 0.92, fill, col, alpha=0.85)
-            self._cyl([bx, y, top + h / 2], r, h, (0.85, 0.95, 1.0), alpha=0.25, specular=(1, 1, 1))
-
-    def _flasks(self, x, y, top, liquids, i):
-        for k in range(2):
-            fx = x - 0.15 + 0.3 * k
-            col = liquids[(i + k) % len(liquids)]
-            self._sphere([fx, y, top + 0.08], 0.075, col, alpha=0.8)
-            self._sphere([fx, y, top + 0.08], 0.085, (0.85, 0.95, 1.0), alpha=0.25)
-            self._cyl([fx, y, top + 0.2], 0.018, 0.12, (0.85, 0.95, 1.0), alpha=0.4)
-        # ring stand
-        self._box([x + 0.4, y + 0.1, top + 0.01], [0.08, 0.06, 0.01], BLACK)
-        self._cyl([x + 0.4, y + 0.1, top + 0.3], 0.008, 0.6, STEEL)
-        self._cyl([x + 0.4, y + 0.02, top + 0.35], 0.05, 0.01, STEEL)
-
-    def _monitor(self, x, y, top, i):
-        self._box([x, y + 0.12, top + 0.02], [0.12, 0.08, 0.02], BLACK)                  # foot
-        self._box([x, y + 0.14, top + 0.12], [0.02, 0.02, 0.1], BLACK)                   # neck
-        self._box([x, y + 0.12, top + 0.42], [0.36, 0.02, 0.22], BLACK)                  # bezel
-        self._box([x, y + 0.095, top + 0.42], [0.33, 0.005, 0.195], (0.05, 0.12, 0.22))  # screen
-        # a "live plot" on the screen
-        pts = np.linspace(-0.3, 0.3, 24)
-        wave = 0.09 * np.sin(pts * 14 + i) * np.exp(-((pts) ** 2) * 6)
-        for a, b, wa, wb in zip(pts, pts[1:], wave, wave[1:]):
-            self.p.addUserDebugLine([x + a, y + 0.088, top + 0.42 + wa], [x + b, y + 0.088, top + 0.42 + wb],
-                                    [0.2, 1.0, 0.6], lineWidth=2.0)
-        self._box([x + 0.5, y - 0.05, top + 0.012], [0.22, 0.08, 0.012], (0.18, 0.18, 0.2))  # keyboard
-
-    def _microscope(self, x, y, top):
-        self._box([x, y, top + 0.02], [0.1, 0.13, 0.02], WHITE)
-        self._box([x, y + 0.09, top + 0.17], [0.03, 0.03, 0.15], WHITE)
-        self._cyl([x, y + 0.02, top + 0.26], 0.025, 0.16, BLACK)
-        self._cyl([x, y + 0.02, top + 0.11], 0.05, 0.012, BLACK)
-        self._sphere([x, y + 0.02, top + 0.35], 0.03, BLACK)
-
-    def _tube_rack(self, x, y, top, liquids):
-        self._box([x, y, top + 0.05], [0.18, 0.05, 0.008], WHITE)
-        self._box([x, y, top + 0.01], [0.18, 0.05, 0.008], WHITE)
-        for k in range(6):
-            tx = x - 0.15 + 0.06 * k
-            col = liquids[k % len(liquids)]
-            self._cyl([tx, y, top + 0.06], 0.011, 0.08, col, alpha=0.9)
-            self._cyl([tx, y, top + 0.075], 0.013, 0.13, (0.85, 0.95, 1.0), alpha=0.3)
-
-    def _build_wall_features(self):
-        p = self.p
-        wy = BACK_WALL_Y - 0.01
-        # periodic table poster
-        px, pz, cell = -2.6, 1.45, 0.055
-        self._box([px + 9 * cell, wy - 0.005, pz + 0.24], [9 * cell + 0.06, 0.004, 0.28], WHITE)
-        groups = {
-            (0.95, 0.45, 0.45): [(0, 0)] + [(r, 0) for r in range(1, 7)],
-            (1.0, 0.7, 0.35): [(r, 1) for r in range(1, 7)],
-            (0.55, 0.75, 1.0): [(r, c) for r in range(3, 7) for c in range(2, 12)],
-            (0.6, 0.9, 0.55): [(r, c) for r in range(1, 7) for c in range(12, 17)
-                               if not (r < 3 and c < 12)],
-            (0.85, 0.6, 1.0): [(r, 17) for r in range(0, 7)],
-        }
-        for rgb, cells in groups.items():
-            vis = self._vis("box", (cell * 0.45, 0.004, cell * 0.45), [*rgb, 1])
-            pos = [[px + c * cell, wy - 0.012, pz + 0.42 - r * cell] for r, c in cells]
-            p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=vis,
-                              batchPositions=pos)
-        p.addUserDebugText("PERIODIC TABLE", [px + 6 * cell, wy - 0.03, pz + 0.58],
-                           textColorRGB=list(INK), textSize=1.0)
-        # whiteboard with the controller equations
-        bx, bz = 4.6, 1.85
-        self._box([bx, wy - 0.01, bz], [1.25, 0.012, 0.5], STEEL)
-        self._box([bx, wy - 0.02, bz], [1.2, 0.01, 0.46], WHITE)
-        for k, line in enumerate(["GAIT LAB  //  trot controller",
-                                  "phi_i = f*t + offset_i",
-                                  "q* = IK(foot(phi_i))",
-                                  "tau = kp(q* - q) - kd*q'",
-                                  "goal: adapt to motor faults!"]):
-            p.addUserDebugText(line, [bx - 1.1, wy - 0.04, bz + 0.33 - 0.15 * k],
-                               textColorRGB=list((0.1, 0.2, 0.7) if k else (0.75, 0.1, 0.1)), textSize=1.1)
-        # lab sign + safety signs
-        self._box([10.5, wy - 0.01, 2.3], [1.3, 0.012, 0.22], WAINSCOT)
-        p.addUserDebugText("ROBOEVOLVE  LAB 3", [9.45, wy - 0.04, 2.25], textColorRGB=list(WHITE), textSize=1.8)
-        for sx in (-0.2, 8.4, 13.6):
-            self._box([sx, wy - 0.01, 1.75], [0.32, 0.01, 0.2], HAZARD)
-            self._box([sx, wy - 0.015, 1.75], [0.29, 0.01, 0.17], BLACK)
-            p.addUserDebugText("CAUTION", [sx - 0.2, wy - 0.04, 1.78], textColorRGB=list(HAZARD), textSize=1.0)
-            p.addUserDebugText("ROBOT TESTING", [sx - 0.27, wy - 0.04, 1.66], textColorRGB=list(HAZARD),
-                               textSize=0.9)
-        # shelves with bottles
-        rng = np.random.default_rng(5)
-        for sx0, sx1 in ((6.6, 8.0), (12.0, 15.5)):
-            for sz in (1.55, 2.05):
-                self._box([(sx0 + sx1) / 2, wy - 0.14, sz], [(sx1 - sx0) / 2, 0.13, 0.015], STEEL)
-                for bxx in np.arange(sx0 + 0.1, sx1 - 0.05, 0.16):
-                    h = rng.uniform(0.12, 0.26)
-                    col = [(0.45, 0.25, 0.1), (0.15, 0.45, 0.2), (0.25, 0.4, 0.8), (0.9, 0.9, 0.9)][
-                        int(rng.integers(4))]
-                    self._cyl([bxx, wy - 0.14, sz + 0.015 + h / 2], 0.04, h, col, alpha=0.9)
-        # wall clock
-        self._cyl([1.5, wy - 0.02, 2.55], 0.2, 0.02, WHITE)
-        self._cyl([1.5, wy - 0.01, 2.55], 0.22, 0.02, BLACK)
-        self.clock_center = [1.5, wy - 0.04, 2.55]
-        self.clock_hand = self._box(self.clock_center, [0.008, 0.004, 0.08], BLACK)
-
-    def _build_track(self):
-        p = self.p
-        L, hw, x0 = TRACK_LENGTH_M, TRACK_HALF_WIDTH_M, TRACK_START_X
-        self._box([x0 + L / 2, 0, 0.001], [L / 2, hw + 0.08, 0.001], LANE)
-        # hazard-stripe borders (yellow/black)
-        for y in (-hw - 0.04, hw + 0.04):
-            self._box([x0 + L / 2, y, 0.0025], [L / 2, 0.04, 0.0025], BLACK)
-            vis = self._vis("box", (0.05, 0.04, 0.003), [*HAZARD, 1])
-            p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=vis,
-                              batchPositions=[[x, y, 0.0031] for x in np.arange(x0 + 0.05, x0 + L, 0.2)])
-        for m in range(0, int(L + x0) + 1):
-            self._box([m, 0, 0.003], [0.01 if m else 0.03, hw, 0.003], INK if m else GREEN)
-            if m:
-                p.addUserDebugText(f"{m} m", [m - 0.1, -hw - 0.25, 0.02], textColorRGB=list(INK), textSize=1.1)
-        p.addUserDebugText("START", [-0.35, -hw - 0.25, 0.02], textColorRGB=list(GREEN), textSize=1.3)
-        p.addUserDebugText("TEST LANE A", [-0.9, 0.0, 0.01], textColorRGB=list(INK), textSize=1.2)
-
-    def _build_arms(self):
-        """Two robot-arm props on the bench (collisions disabled, animated)."""
-        p = self.p
-        y, top = BACK_WALL_Y - 0.40, 0.93
-        self.arms = []
-        for path, pos in (("kuka_iiwa/model.urdf", [2.6, y, top]), ("franka_panda/panda.urdf", [11.2, y, top])):
-            try:
-                arm = p.loadURDF(path, pos, p.getQuaternionFromEuler([0, 0, -math.pi / 2]), useFixedBase=True,
-                                 flags=p.URDF_USE_MATERIAL_COLORS_FROM_MTL)
-            except Exception:
-                continue
-            for link in range(-1, p.getNumJoints(arm)):
-                p.setCollisionFilterGroupMask(arm, link, 0, 0)
-            joints = [j for j in range(p.getNumJoints(arm))
-                      if p.getJointInfo(arm, j)[2] == p.JOINT_REVOLUTE][:7]
-            self.arms.append((arm, joints))
-            self._cyl([pos[0], pos[1], top - 0.005], 0.16, 0.01, BLACK)
+    def _load_status_textures(self) -> dict:
+        """Pre-render the wall screen for every state of this stage, so swapping mid-run is instant."""
+        stage, n = self.quest["stage"], len(self.quest["stages"])
+        name = self._stage()["name"]
+        return {state: self.lab.texture(tx.status_texture(state, stage, n, name, self.fault_motor))
+                for state in tx.STATUS_STYLES}
 
     def _build_quest_objects(self):
         """Spotlight discs that follow the robot (cyan when healthy, red on a fault)."""
-        self.spot_glow = self._cyl([0, 0, 0.0035], 0.62, 0.001, CYAN, alpha=0.12, specular=(0, 0, 0))
-        self.spot_core = self._cyl([0, 0, 0.0045], 0.40, 0.001, CYAN, alpha=0.22, specular=(0, 0, 0))
+        self.spot_glow = self.lab.cyl([0, 0, 0.0035], 0.62, 0.001, CYAN, alpha=0.12, specular=(0, 0, 0))
+        self.spot_core = self.lab.cyl([0, 0, 0.0045], 0.40, 0.001, CYAN, alpha=0.22, specular=(0, 0, 0))
         self.spot_rgb = CYAN
 
     # -------------------------------------------------------------- per frame
@@ -452,14 +250,22 @@ class GuiScene:
             self.trail_prev = cur
 
         weak = [c for c in self.sim.last_commands if c.max_torque < rc.MAX_TORQUE_NM - 1e-9]
-        self._animate_props(t, pos, weak)
         self._update_events(t, weak, fell)
+        self._animate_props(t, pos, weak)
         self._tint_faults(weak)
         self._draw_overlay(t, pos, lin_vel, fell, weak)
 
+    def _trial_state(self, weak) -> str:
+        """'nominal' | 'fault' | 'adapted' | 'down' -- drives the wall screen, beacon and spotlight."""
+        if self.fell_seen:
+            return "down"
+        if weak:
+            return "adapted" if self._stage().get("adapted") else "fault"
+        return "nominal"
+
     def _animate_props(self, t, pos, weak):
-        p = self.p
-        for k, (arm, joints) in enumerate(self.arms):
+        p, props = self.p, self.props
+        for k, (arm, joints) in enumerate(props.arms):
             for j, jid in enumerate(joints):
                 q = 0.5 * math.sin(0.6 * t + j * 0.9 + k * 2.0)
                 if j == 1:
@@ -468,16 +274,35 @@ class GuiScene:
                     q = -1.4 + 0.4 * math.sin(0.7 * t + k)
                 p.resetJointState(arm, jid, q)
         ang = -t * 0.5
-        c = self.clock_center
+        c = props.clock_center
         p.resetBasePositionAndOrientation(
-            self.clock_hand, [c[0] + 0.08 * math.sin(ang), c[1], c[2] + 0.08 * math.cos(ang)],
+            props.clock_hand, [c[0] + 0.08 * math.sin(ang), c[1], c[2] + 0.08 * math.cos(ang)],
             p.getQuaternionFromEuler([0, ang, 0]))
-        # spotlight follows the robot: red once a motor is faulted, green on an
-        # adapted-gait stage (same fault, new controller)
-        if weak:
-            rgb = GREEN if self._stage().get("adapted") and not self.fell_seen else FAULT_RED
+        for led in self.led_rng.choice(props.leds, size=min(LED_BLINKS_PER_FRAME, len(props.leds)), replace=False):
+            rgb = (GREEN, GREEN, CYAN, AMBER, (0.05, 0.25, 0.1))[int(self.led_rng.integers(5))]
+            p.changeVisualShape(int(led), -1, rgbaColor=[*rgb, 1])
+
+        state = self._trial_state(weak)
+        if state != self.status_state:
+            p.changeVisualShape(props.status_screen, -1, textureUniqueId=self.status_tex[state])
+            self.status_state = state
+        self._animate_beacon(t, state)
+        self._move_spotlight(t, pos, state)
+
+    def _animate_beacon(self, t, state):
+        """Start-totem beacon: steady cyan/green when fine, flashing red on a fault."""
+        if state in ("fault", "down"):
+            rgb = FAULT_RED if int(t * 4) % 2 == 0 else (0.25, 0.02, 0.02)
         else:
-            rgb = CYAN
+            rgb = GREEN if state == "adapted" else CYAN
+        if rgb != self.beacon_rgb:
+            self.p.changeVisualShape(self.props.beacon, -1, rgbaColor=[*rgb, 0.95])
+            self.beacon_rgb = rgb
+
+    def _move_spotlight(self, t, pos, state):
+        """Spotlight follows the robot: cyan healthy, red faulted/down, green on the adapted gait."""
+        p = self.p
+        rgb = {"nominal": CYAN, "adapted": GREEN}.get(state, FAULT_RED)
         if rgb != self.spot_rgb:
             p.changeVisualShape(self.spot_glow, -1, rgbaColor=[*rgb, 0.12])
             p.changeVisualShape(self.spot_core, -1, rgbaColor=[*rgb, 0.22])
@@ -550,7 +375,7 @@ class GuiScene:
         center = self._screen_point((x0 + x1) / 2, (y0 + y1) / 2, d)
         if self.panel_id is None:
             # fully transparent: it only carries the screen-pinned banner text
-            self.panel_id = self._body(self._vis("box", (0.001, 0.001, 0.0005), [0, 0, 0, 0], (0, 0, 0)),
+            self.panel_id = self.lab.body(self.lab.vis("box", (0.001, 0.001, 0.0005), [0, 0, 0, 0], (0, 0, 0)),
                                        center, quat)
         else:
             self.p.resetBasePositionAndOrientation(self.panel_id, center, quat)
@@ -582,21 +407,31 @@ class GuiScene:
         fell = self.fell_seen
         pos = self.sim.base_state()[0]
         dist = float(pos[0] - self.start_pos[0]) if self.start_pos is not None else 0.0
+        t_end = self.sim.time_s
         base = q["stages"][0].get("result") if i > 0 else None
-        pct = 100 * dist / base["distance_m"] if base and base["distance_m"] > 0 else None
+        base_speed = (base["distance_m"] / base["sim_time_s"]
+                      if base and base.get("sim_time_s") and base["distance_m"] > 0 else None)
+        speed_pct = 100 * (dist / t_end) / base_speed if base_speed and t_end > 0 else None
         last = i == len(q["stages"]) - 1
         stage = q["stages"][i]
         if stage.get("adapted"):
             title = ("QUEST COMPLETE", GOLD) if not fell else ("QUEST FAILED", FAULT_RED)
-            sub = (f"adapted gait: {dist:.2f} m on the injured leg - {pct:.0f}% of the healthy distance"
-                   if pct is not None else result_line, WHITE if not fell else FAULT_RED)
-        elif i > 0 and pct is not None:
+            sub = f"adapted gait: {dist:.2f} m in {t_end:.0f} s on the injured leg"
+            if not fell:
+                sub += " - no fall"
+            if speed_pct is not None:
+                sub += f" ({speed_pct:.0f}% of healthy speed)"
+            sub = (sub, WHITE if not fell else FAULT_RED)
+        elif i > 0:
             if last:
                 title = ("QUEST FAILED", FAULT_RED) if fell else ("QUEST COMPLETE", GOLD)
             else:
                 title = (f"STAGE {i + 1} FAILED", FAULT_RED) if fell else (f"STAGE {i + 1} COMPLETE", GOLD)
-            sub = (f"injury cost {100 - pct:.0f}% of the distance - the gait must adapt"
-                   if fell or pct < 90 else "the robot coped with the injury", FAULT_RED if fell else WHITE)
+            if fell:
+                sub = (f"robot fell after {dist:.2f} m - the gait must adapt", FAULT_RED)
+            else:
+                sub = (f"{dist:.2f} m in {t_end:.0f} s with the injury"
+                       + (f" ({speed_pct:.0f}% of healthy speed)" if speed_pct is not None else ""), WHITE)
         else:
             title = (f"STAGE {i + 1} COMPLETE", GOLD) if not fell else (f"STAGE {i + 1} FAILED", FAULT_RED)
             sub = (result_line, WHITE)

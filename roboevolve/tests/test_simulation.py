@@ -277,3 +277,22 @@ def test_load_adapted_gait_checks(tmp_path):
     good.write_text(json.dumps({"params": {"kp": 0.9}, "fault": fault, "provenance": {"optimiser": "x"}}))
     params, _ = load_adapted_gait(good, fault)
     assert params == {"kp": 0.9}
+
+
+def test_stop_when_still_ends_after_robot_settles():
+    """With stop_when_still_s, an injured trial ends once the fallen robot stops moving."""
+    pytest.importorskip("roboevolve.faults")
+    from roboevolve.simulation import STILL_TOLERANCE_M
+    fault = {"joint": "front_left_calf", "type": "torque_loss", "strength": 0.0, "start_time_s": 0.0}
+    full = simulate(DEFAULT_CONTROLLER_PARAMS, fault=fault, duration_s=20.0, stop_on_fall=False)
+    res = simulate(DEFAULT_CONTROLLER_PARAMS, fault=fault, duration_s=20.0, stop_on_fall=False,
+                   stop_when_still_s=2.0)
+    print(f"\nfell at {res['fall_time_s']:.2f} s, ended at {res['sim_time_s']:.2f} s (full run 20 s)")
+    assert res["fell"] and res["sim_time_s"] < full["sim_time_s"]
+    assert res["sim_time_s"] >= res["fall_time_s"] + 2.0 - 1e-9
+    tel = res["telemetry"]
+    last = tel["base_pos"][tel["t"] >= res["sim_time_s"] - 2.0]
+    assert np.linalg.norm(last - last[0], axis=1).max() <= STILL_TOLERANCE_M + 1e-9
+    # identical physics up to the stop: the shorter run is a prefix of the full one
+    n = len(tel["t"]) - 1
+    np.testing.assert_array_equal(tel["base_pos"][:n], full["telemetry"]["base_pos"][:n])
