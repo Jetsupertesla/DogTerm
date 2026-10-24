@@ -8,9 +8,9 @@
 
 Stage 1 walks with the baseline controller; stage 2 uses the same controller
 with a motor disabled (faults.py ``torque_loss``, strength 0 = dead motor);
-stage 3 keeps the same injury but swaps in the gait found by Person 3's
-optimiser (``roboevolve/data/adapted_gait.json``, produced by
-``python -m roboevolve.make_adapted_gait``).  Injured stages keep running after
+stage 3 keeps the same injury but swaps in an adapted gait
+(``roboevolve/data/adapted_gait.json``, produced by
+``python -m roboevolve.make_adapted_gait``; see that module for the search).  Injured stages keep running after
 a fall, and end once the fallen robot has not moved for 2 s (``--still-stop``).
 """
 
@@ -91,7 +91,7 @@ def main(argv=None):
             sets.append(dict(name="adapted", params=adapted, fault=fault, duration_s=args.injured_duration,
                              stop_on_fall=False, stage_name=f"Adapted gait, {injury.lower()}",
                              rgb=(0.15, 0.85, 0.35), adapted=True,
-                             intro=("ADAPTED GAIT", "optimiser-tuned controller, same injury")))
+                             intro=("ADAPTED GAIT", "controller re-tuned for the injured leg, same injury")))
 
     # One quest spans every stage: each window knows earlier stages' results.
     quest = {
@@ -111,7 +111,7 @@ def main(argv=None):
                        gui=not args.headless, stop_on_fall=st["stop_on_fall"],
                        gui_hold_s=args.hold, gui_quest=quest,
                        stop_when_still_s=args.still_stop if args.still_stop > 0 else None)
-        quest["stages"][i]["result"] = {k: res[k] for k in ("distance_m", "fell", "fall_time_s")}
+        quest["stages"][i]["result"] = {k: res[k] for k in ("distance_m", "fell", "fall_time_s", "sim_time_s")}
         results[st["name"]] = res
         print(json.dumps({k: res[k] for k in SUMMARY_KEYS}, indent=2), flush=True)
 

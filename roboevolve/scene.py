@@ -407,21 +407,31 @@ class GuiScene:
         fell = self.fell_seen
         pos = self.sim.base_state()[0]
         dist = float(pos[0] - self.start_pos[0]) if self.start_pos is not None else 0.0
+        t_end = self.sim.time_s
         base = q["stages"][0].get("result") if i > 0 else None
-        pct = 100 * dist / base["distance_m"] if base and base["distance_m"] > 0 else None
+        base_speed = (base["distance_m"] / base["sim_time_s"]
+                      if base and base.get("sim_time_s") and base["distance_m"] > 0 else None)
+        speed_pct = 100 * (dist / t_end) / base_speed if base_speed and t_end > 0 else None
         last = i == len(q["stages"]) - 1
         stage = q["stages"][i]
         if stage.get("adapted"):
             title = ("QUEST COMPLETE", GOLD) if not fell else ("QUEST FAILED", FAULT_RED)
-            sub = (f"adapted gait: {dist:.2f} m on the injured leg - {pct:.0f}% of the healthy distance"
-                   if pct is not None else result_line, WHITE if not fell else FAULT_RED)
-        elif i > 0 and pct is not None:
+            sub = f"adapted gait: {dist:.2f} m in {t_end:.0f} s on the injured leg"
+            if not fell:
+                sub += " - no fall"
+            if speed_pct is not None:
+                sub += f" ({speed_pct:.0f}% of healthy speed)"
+            sub = (sub, WHITE if not fell else FAULT_RED)
+        elif i > 0:
             if last:
                 title = ("QUEST FAILED", FAULT_RED) if fell else ("QUEST COMPLETE", GOLD)
             else:
                 title = (f"STAGE {i + 1} FAILED", FAULT_RED) if fell else (f"STAGE {i + 1} COMPLETE", GOLD)
-            sub = (f"injury cost {100 - pct:.0f}% of the distance - the gait must adapt"
-                   if fell or pct < 90 else "the robot coped with the injury", FAULT_RED if fell else WHITE)
+            if fell:
+                sub = (f"robot fell after {dist:.2f} m - the gait must adapt", FAULT_RED)
+            else:
+                sub = (f"{dist:.2f} m in {t_end:.0f} s with the injury"
+                       + (f" ({speed_pct:.0f}% of healthy speed)" if speed_pct is not None else ""), WHITE)
         else:
             title = (f"STAGE {i + 1} COMPLETE", GOLD) if not fell else (f"STAGE {i + 1} FAILED", FAULT_RED)
             sub = (result_line, WHITE)

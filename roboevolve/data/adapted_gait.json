@@ -1,18 +1,18 @@
 {
   "params": {
-    "frequency_hz": 0.577762248144035,
-    "stride_scale": 0.9011690711035243,
-    "step_height_m": 0.05861982877007632,
+    "frequency_hz": 1.7452139733186094,
+    "stride_scale": 0.31142279613932666,
+    "step_height_m": 0.03197408678251698,
+    "kp": 0.275012912115626,
+    "kd": 1.5050682774764155,
+    "duty_factor": 0.5751459588767737,
+    "body_height_offset_m": 0.047523884953370024,
     "phase_offsets": [
       0.0,
+      0.0,
       0.5,
-      0.5,
-      0.0
-    ],
-    "kp": 1.2481393685994535,
-    "kd": 1.0080289648031933,
-    "duty_factor": 0.7686715718644841,
-    "body_height_offset_m": 0.040063455098124104
+      0.5
+    ]
   },
   "fault": {
     "joint": "front_left_calf",
@@ -21,18 +21,48 @@
     "start_time_s": 0.0
   },
   "measured_in_demo_conditions": {
-    "distance_m": 1.8760148824956917,
-    "fell": true,
-    "fall_time_s": 18.238,
-    "sim_time_s": 20.0
+    "distance_m": 3.463770517257792,
+    "fell": false,
+    "fall_time_s": null,
+    "sim_time_s": 20.0,
+    "lateral_drift_m": -0.1745024381391322
   },
   "provenance": {
-    "optimiser": "optimizer.optimise_controller (Person 3), numeric proposer, no LLM",
-    "budget_per_restart": 80,
-    "restarts": 4,
-    "chosen_restart": 2,
+    "method": "robust search on simulate() (Person 1): broad random search over PARAM_BOUNDS + gait library, local refinement, robustness refinement on demo + noisy starts",
+    "random_gaits": 400,
+    "broad_rounds": 12,
+    "robust_rounds": 14,
+    "train_starts": [
+      [
+        0,
+        0.0
+      ],
+      [
+        1,
+        0.02
+      ],
+      [
+        2,
+        0.02
+      ],
+      [
+        3,
+        0.02
+      ]
+    ],
+    "rng_seeds": [
+      42,
+      7
+    ],
     "trial_duration_s": 20.0,
-    "contexts": "demo start (no noise) + noisy start (0.02 rad)",
-    "runtime_s": 105.1
+    "held_out_check": {
+      "starts": 16,
+      "falls": 0,
+      "distance_m_min": 3.089,
+      "distance_m_median": 3.249,
+      "distance_m_max": 3.422,
+      "max_lateral_drift_m": 0.228
+    },
+    "note": "Person 3's optimise_controller (make_adapted_gait --method person3) reached 1.88 m, fell at 18.2 s, under the same conditions"
   }
 }
