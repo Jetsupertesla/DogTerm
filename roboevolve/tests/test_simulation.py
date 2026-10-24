@@ -213,6 +213,8 @@ def test_evaluation_accepts_simulation_result():
     assert m["covers_trial"] and m["task_completed"]
     assert m["forward_distance"] == pytest.approx(raw["distance_m"], abs=0.02)
     assert out["score_is_placeholder"] is False
+    import json
+    json.dumps(m, allow_nan=False)  # benchmark CLI serialises these metrics
 
 
 def test_telemetry_ends_at_fall_time():

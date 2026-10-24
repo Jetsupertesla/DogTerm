@@ -67,17 +67,18 @@ class QuadrupedSim:
 
     def __init__(self, gui: bool = False):
         self.gui = gui
-        self.client = bullet_client.BulletClient(
-            connection_mode=pybullet.GUI if gui else pybullet.DIRECT
-        )
+        if gui:
+            from .scene import WINDOW_OPTIONS
+            self.client = bullet_client.BulletClient(connection_mode=pybullet.GUI,
+                                                     options=WINDOW_OPTIONS)
+        else:
+            self.client = bullet_client.BulletClient(connection_mode=pybullet.DIRECT)
         p = self.client
         p.resetSimulation()
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
         p.setTimeStep(TIME_STEP_S)
         p.setPhysicsEngineParameter(numSolverIterations=50, deterministicOverlappingPairs=1)
-        if gui:
-            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
         self.plane_id = p.loadURDF("plane.urdf")
         p.changeDynamics(self.plane_id, -1, lateralFriction=GROUND_LATERAL_FRICTION)
@@ -104,6 +105,12 @@ class QuadrupedSim:
         self.motor_hook: MotorHook | None = None
         self.last_commands: list[MotorCommand] = []
         self.step_count = 0
+
+        # Visual-only arena/HUD; never built for headless runs.
+        self.scene = None
+        if gui:
+            from .scene import GuiScene
+            self.scene = GuiScene(self)
 
     # -- lifecycle ---------------------------------------------------------
     def close(self):
@@ -246,6 +253,7 @@ def simulate(
     stop_on_fall: bool = True,
     realtime: bool | None = None,
     initial_joint_noise_rad: float = 0.0,
+    gui_hold_s: float = 0.0,
 ) -> dict:
     """Run one trial and return metrics + telemetry.
 
@@ -261,6 +269,7 @@ def simulate(
       stop_on_fall: end the trial FALL_GRACE_S after the first detected fall.
       realtime: pace to wall-clock time (defaults to ``gui``).
       initial_joint_noise_rad: uniform noise added to the initial joint angles.
+      gui_hold_s: in GUI mode, keep the window open this long after the trial.
 
     Returns a dict:
       distance_m         forward displacement (+x, the robot's initial heading)
@@ -333,7 +342,7 @@ def simulate(
                 break
 
             if gui:
-                sim.client.resetDebugVisualizerCamera(1.2, 45, -25, pos.tolist())
+                sim.scene.update(sim.time_s, pos, lin, fell)
             if realtime:
                 lag = sim.time_s - (time.perf_counter() - wall_start)
                 if lag > 0:
@@ -341,6 +350,10 @@ def simulate(
 
         end_pos, _, _, _ = sim.base_state()
         elapsed = sim.time_s
+        if gui:
+            d = float(np.dot(end_pos - start_pos, rc.FORWARD_AXIS_WORLD))
+            sim.scene.finish(f"{'FELL' if fell else 'FINISHED'}  {d:.2f} m in {elapsed:.1f} s")
+            time.sleep(max(gui_hold_s, 0.0))
 
     telemetry = rec.as_arrays()
     roll_pitch = telemetry["rpy"][:, :2] if len(telemetry["t"]) else np.zeros((0, 2))

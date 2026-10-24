@@ -9,6 +9,7 @@ roboevolve/
 ├── simulation.py      # QuadrupedSim, send_motor_commands() (fault hook), simulate()
 ├── controller.py      # GaitController, MotorCommand, params + bounds, leg IK
 ├── robot_config.py    # joint map, standing pose, limits, torque cap
+├── scene.py           # GUI-only arena, HUD, trail, camera (visual only)
 ├── demo_walk.py       # GUI / headless demo
 └── tests/test_simulation.py
 ```
@@ -32,10 +33,21 @@ uses a prebuilt wheel or compiles from source with the Xcode command-line tools.
 python -m roboevolve.demo_walk                 # GUI, camera follows the robot
 python -m roboevolve.demo_walk --headless      # prints metrics as JSON
 python -m roboevolve.demo_walk --frequency 2.5 --step-height 0.04 --plot
+python -m roboevolve.demo_walk --fault-joint front_left_calf --fault-start 4   # live motor failure
 python -m pytest roboevolve/tests -s           # tests, with measured numbers printed
 ```
 
 Run these commands from the repository root, the directory that contains `roboevolve/`.
+
+The GUI (`scene.py`) shows:
+- a neon arena with a metre-marked track and gates;
+- a live HUD (time, distance, speed, status) and a trail of the robot's path;
+- a smooth follow camera;
+- faulted motors tinted red, with their strength shown in the HUD.
+
+The scene is visual-only: its objects have no collision and it is never built
+headless, so GUI and headless runs give identical results.
+`--hold N` keeps the window open for N seconds at the end.
 
 ## Headless API
 
@@ -169,7 +181,5 @@ Notes for fault design:
 `benchmark.run_benchmark(simulate, params, fault)` both work with this module,
 and tests cover them.
 
-Known issue in `benchmark.py`, not fixed here because the file belongs to Person 2:
-- The CLI's `json.dumps` raises `TypeError: Object of type bool is not JSON serializable`.
-- Cause: `evaluation.py` compares NumPy floats, so `success` and `task_completed` come out as `numpy.bool_`.
-- Fix: cast them with `bool(...)` in `evaluation.py`, or pass `default=lambda o: o.item()` to `json.dumps` in `benchmark.py`.
+`evaluation.py` casts `success` to a plain `bool`. With NumPy telemetry it used to
+be `numpy.bool_`, which crashed the benchmark CLI's `json.dumps`.

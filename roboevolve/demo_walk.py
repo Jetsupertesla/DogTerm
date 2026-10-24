@@ -3,6 +3,7 @@
     python -m roboevolve.demo_walk                    # GUI, default params
     python -m roboevolve.demo_walk --headless         # no window, prints metrics
     python -m roboevolve.demo_walk --frequency 2.0 --stride-scale 1.2 --plot
+    python -m roboevolve.demo_walk --fault-joint front_left_calf --fault-start 4
 """
 
 from __future__ import annotations
@@ -24,6 +25,10 @@ def main(argv=None):
     ap.add_argument("--step-height", type=float, default=DEFAULT_CONTROLLER_PARAMS["step_height_m"])
     ap.add_argument("--kp", type=float, default=DEFAULT_CONTROLLER_PARAMS["kp"])
     ap.add_argument("--kd", type=float, default=DEFAULT_CONTROLLER_PARAMS["kd"])
+    ap.add_argument("--fault-joint", help="motor to fail, e.g. front_left_calf (needs faults.py)")
+    ap.add_argument("--fault-strength", type=float, default=0.0, help="0 = dead motor, 1 = healthy")
+    ap.add_argument("--fault-start", type=float, default=4.0, help="fault onset time (s)")
+    ap.add_argument("--hold", type=float, default=5.0, help="GUI: seconds to keep the window open at the end")
     ap.add_argument("--keep-going", action="store_true", help="don't stop the trial when the robot falls")
     ap.add_argument("--plot", action="store_true", help="plot trajectory/orientation with matplotlib")
     args = ap.parse_args(argv)
@@ -35,8 +40,13 @@ def main(argv=None):
         "kp": args.kp,
         "kd": args.kd,
     }
-    res = simulate(params, seed=args.seed, duration_s=args.duration,
-                   gui=not args.headless, stop_on_fall=not args.keep_going)
+    fault = None
+    if args.fault_joint:
+        fault = {"joint": args.fault_joint, "type": "torque_loss",
+                 "strength": args.fault_strength, "start_time_s": args.fault_start}
+    res = simulate(params, fault=fault, seed=args.seed, duration_s=args.duration,
+                   gui=not args.headless, stop_on_fall=not args.keep_going,
+                   gui_hold_s=args.hold)
 
     summary = {k: res[k] for k in ("distance_m", "avg_speed_m_s", "fell", "fall_time_s",
                                    "fall_reason", "stability_rms_rad", "energy_j",

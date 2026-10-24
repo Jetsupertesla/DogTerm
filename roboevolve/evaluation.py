@@ -114,8 +114,8 @@ def evaluate(samples, actuated_joints, config=EvaluationConfig(), *, torque_sour
                   duration_s=duration, fell=first_fall is not None, first_fall_time_s=first_fall,
                   tilt_rms=sqrt(tilt_integral/duration), energy_j=energy, torque_source=torque_source,
                   max_lateral_deviation_m=lateral, task_completed=duration >= config.task_duration_s-1e-9)
-    result['success'] = (result['task_completed'] and not result['fell'] and distance >= config.min_forward_distance_m
-                         and lateral <= config.max_lateral_deviation_m)
+    result['success'] = bool(result['task_completed'] and not result['fell'] and distance >= config.min_forward_distance_m
+                             and lateral <= config.max_lateral_deviation_m)
     result['score'] = score(result, weights)
     return result
 
@@ -156,9 +156,9 @@ def evaluate_simulation_result(raw, config=EvaluationConfig(), weights=RewardWei
     metrics['covers_trial'] = start <= samples[1]['time_s'] - start + 1e-9 and abs(end - sim_time) <= 1e-9
     metrics['task_completed'] = metrics['covers_trial'] and sim_time >= config.task_duration_s - 1e-9
     metrics['simulator_fell'] = bool(raw.get('fell', False))
-    metrics['success'] = (metrics['task_completed'] and not metrics['fell'] and not metrics['simulator_fell']
-                          and metrics['forward_distance'] >= config.min_forward_distance_m
-                          and metrics['max_lateral_deviation_m'] <= config.max_lateral_deviation_m)
+    metrics['success'] = bool(metrics['task_completed'] and not metrics['fell'] and not metrics['simulator_fell']
+                              and metrics['forward_distance'] >= config.min_forward_distance_m
+                              and metrics['max_lateral_deviation_m'] <= config.max_lateral_deviation_m)
     result = dict(raw)
     result.update(distance_m=metrics['forward_distance'], avg_speed_m_s=metrics['average_forward_speed'],
                   fell=metrics['fell'], fall_time_s=metrics['first_fall_time_s'], stability_rms_rad=metrics['tilt_rms'],
