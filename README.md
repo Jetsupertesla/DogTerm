@@ -42,12 +42,12 @@ Run these commands from the repository root, the directory that contains `roboev
 
 The GUI (`scene.py`) is a robotics science lab with a game-style quest layer:
 - **Lab:** a tiled floor; a bench run with cabinets, beakers, flasks, test-tube racks, microscopes and monitors showing live plots; shelves of reagent bottles; a periodic-table poster; a whiteboard with the controller equations; caution signs; a wall clock; ceiling lights. Two animated robot arms (KUKA iiwa and Franka Panda) work at the benches.
-- **Quest:** "FIELD TEST 01: walk 4 m across Lab 3 without falling".
-  - A quest log pinned to the screen ticks off objectives.
-  - Checkpoint beacons at 1–4 m turn green when reached (+100 XP each).
-  - Floating energy orbs get collected (+10 XP each).
-  - A QUEST COMPLETE (+500 XP) or QUEST FAILED banner shows at the end.
-  - The status line and any MOTOR FAULT appear in the same panel, and faulted motors are tinted red on the robot.
+- **Quest:** one quest, "FIELD TRIAL", spans both demo sets.
+  - Stage 1 is the healthy walk; stage 2 is the same walk with the injured motor.
+  - A quest log pinned to the screen shows both stages with live and then final results (distance, fell or not), plus a segmented progress bar for the active stage.
+  - Banners announce STAGE 1 COMPLETE, MOTOR FAILURE, ROBOT DOWN, and the verdict: QUEST FAILED, "injury cost N% of the distance - the gait must adapt".
+  - A spotlight under the robot turns from cyan to red when a motor fails, and the faulted motor's link is tinted red.
+  - `simulate(..., gui_quest=...)` takes the quest description (see `scene.DEFAULT_QUEST`); it is purely visual.
 - **Visual only:** decorative bodies have no collision (the robot-arm props have collisions disabled), and the scene is never built headless. GUI and headless runs give bit-identical results (checked: 4.530597694306573 m both ways).
 - **No focus stealing:** set `ROBOEVOLVE_NO_RAISE=1` to stop the window jumping to the front.
 

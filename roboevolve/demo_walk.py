@@ -51,23 +51,34 @@ def main(argv=None):
     }
     fault = {"joint": args.fault_joint, "type": "torque_loss",
              "strength": args.fault_strength, "start_time_s": args.fault_start}
-    pct = f"{100 * args.fault_strength:.0f}%"
+    pretty = args.fault_joint.replace("_", " ").replace("front ", "front-").replace("rear ", "rear-").capitalize()
+    injury = f"{pretty} disabled" if args.fault_strength == 0 else f"{pretty} at {100 * args.fault_strength:.0f}%"
 
     sets = []
     if args.only in (None, "healthy"):
-        sets.append(dict(name="healthy", fault=None, duration_s=args.healthy_duration,
-                         stop_on_fall=True, label="SET 1 - HEALTHY", rgb=(0.0, 0.9, 1.0)))
+        sets.append(dict(name="healthy", fault=None, duration_s=args.healthy_duration, stop_on_fall=True,
+                         stage_name="Healthy walk", rgb=(0.0, 0.75, 0.95)))
     if args.only in (None, "injured"):
-        sets.append(dict(name="injured", fault=fault, duration_s=args.injured_duration,
-                         stop_on_fall=False, rgb=(1.0, 0.15, 0.15),
-                         label=f"SET {len(sets) + 1} - INJURED ({args.fault_joint} {pct})"))
+        sets.append(dict(name="injured", fault=fault, duration_s=args.injured_duration, stop_on_fall=False,
+                         stage_name=injury, rgb=(1.0, 0.65, 0.05)))
+
+    # One quest spans every set: each window shows earlier stages' results.
+    quest = {
+        "title": "QUEST: FIELD TRIAL",
+        "subtitle": "Walk the lab healthy, then survive a motor failure",
+        "stage": 0,
+        "stages": [{"name": st["stage_name"], "duration_s": st["duration_s"], "rgb": st["rgb"], "result": None}
+                   for st in sets],
+    }
 
     results = {}
-    for st in sets:
-        print(f"\n=== {st['label']}  ({st['duration_s']:.0f} s) ===", flush=True)
+    for i, st in enumerate(sets):
+        print(f"\n=== STAGE {i + 1}: {st['stage_name']}  ({st['duration_s']:.0f} s) ===", flush=True)
+        quest["stage"] = i
         res = simulate(params, fault=st["fault"], seed=args.seed, duration_s=st["duration_s"],
                        gui=not args.headless, stop_on_fall=st["stop_on_fall"],
-                       gui_hold_s=args.hold, gui_label=st["label"], gui_label_rgb=st["rgb"])
+                       gui_hold_s=args.hold, gui_quest=quest)
+        quest["stages"][i]["result"] = {k: res[k] for k in ("distance_m", "fell", "fall_time_s")}
         results[st["name"]] = res
         print(json.dumps({k: res[k] for k in SUMMARY_KEYS}, indent=2), flush=True)
 

@@ -65,7 +65,8 @@ class QuadrupedSim:
     released -- important for repeated headless optimisation runs.
     """
 
-    def __init__(self, gui: bool = False, gui_label: str | None = None, gui_label_rgb=None):
+    def __init__(self, gui: bool = False, gui_label: str | None = None, gui_label_rgb=None,
+                 gui_quest: dict | None = None):
         self.gui = gui
         if gui:
             from .scene import WINDOW_OPTIONS
@@ -110,7 +111,7 @@ class QuadrupedSim:
         self.scene = None
         if gui:
             from .scene import CYAN, GuiScene
-            self.scene = GuiScene(self, gui_label, gui_label_rgb or CYAN)
+            self.scene = GuiScene(self, gui_label, gui_label_rgb or CYAN, gui_quest)
 
     # -- lifecycle ---------------------------------------------------------
     def close(self):
@@ -256,6 +257,7 @@ def simulate(
     gui_hold_s: float = 0.0,
     gui_label: str | None = None,
     gui_label_rgb: tuple | None = None,
+    gui_quest: dict | None = None,
 ) -> dict:
     """Run one trial and return metrics + telemetry.
 
@@ -273,6 +275,8 @@ def simulate(
       initial_joint_noise_rad: uniform noise added to the initial joint angles.
       gui_hold_s: in GUI mode, keep the window open this long after the trial.
       gui_label, gui_label_rgb: optional banner shown in the GUI scene.
+      gui_quest: optional quest description for the GUI overlay (see
+        scene.DEFAULT_QUEST); purely visual.
 
     Returns a dict:
       distance_m         forward displacement (+x, the robot's initial heading)
@@ -296,7 +300,7 @@ def simulate(
     hook = motor_hook if motor_hook is not None else _resolve_fault_hook(fault, rng)
     realtime = gui if realtime is None else realtime
 
-    with QuadrupedSim(gui=gui, gui_label=gui_label, gui_label_rgb=gui_label_rgb) as sim:
+    with QuadrupedSim(gui=gui, gui_label=gui_label, gui_label_rgb=gui_label_rgb, gui_quest=gui_quest) as sim:
         sim.motor_hook = hook
         if initial_joint_noise_rad > 0:
             for name, idx in sim.joint_map.items():

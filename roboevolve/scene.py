@@ -8,9 +8,12 @@ Everything here is purely visual and only built when ``gui=True``:
 * headless runs (optimiser, tests) never import this module.
 GUI and headless runs therefore produce identical physics results.
 
-Quest layer: a quest log pinned to the screen (objectives tick off), checkpoint
-beacons that turn green, collectible energy orbs, XP counter, and
-QUEST COMPLETE / QUEST FAILED banners.  It only *reads* the robot state.
+Quest layer: one two-stage quest across the demo's sets (healthy walk, then
+the same walk with a motor disabled).  A quest log pinned to the screen shows
+both stages with live/final results and a segmented progress bar; banners
+announce the motor failure, the robot going down, and the final verdict.  A
+spotlight under the robot turns red once a motor is faulted.  The overlay only
+*reads* robot state.
 """
 
 from __future__ import annotations
@@ -40,9 +43,10 @@ GOLD = (1.0, 0.78, 0.12)
 WHITE = (1.0, 1.0, 1.0)
 INK = (0.10, 0.14, 0.22)
 FAULT_RED = (0.95, 0.10, 0.10)
-MAGENTA = (0.90, 0.15, 0.60)
 PANEL = (0.04, 0.06, 0.12)
 PENDING = (0.78, 0.83, 0.90)
+DIM = (0.50, 0.55, 0.62)
+BAR_EMPTY = (0.22, 0.26, 0.33)
 OVERLAY_DEPTH = 0.5  # metres in front of the camera for screen-pinned UI
 
 TRACK_START_X = -1.0
@@ -52,11 +56,12 @@ BACK_WALL_Y = 3.6
 ROOM_X = (-6.0, 18.0)
 WALL_H = 3.6
 
-QUEST_TITLE = "QUEST: FIELD TEST 01"
-QUEST_SUBTITLE = "Walk 4 m across Lab 3 without falling"
-CHECKPOINTS_M = (1.0, 2.0, 3.0, 4.0)
-ORBS_X = tuple(round(x, 2) for x in np.arange(0.4, 4.61, 0.4) if abs(x - round(x)) > 0.1)
-XP_ORB, XP_CHECKPOINT, XP_QUEST = 10, 100, 500
+DEFAULT_QUEST = {
+    "title": "QUEST: FIELD TRIAL",
+    "subtitle": "Walk the lab healthy, then survive a motor failure",
+    "stage": 0,
+    "stages": [{"name": "Test walk", "duration_s": 12.0, "rgb": (0.0, 0.75, 0.95), "result": None}],
+}
 
 WINDOW_OPTIONS = (
     "--width=1280 --height=720 "
@@ -138,7 +143,7 @@ class GuiScene:
     HUD_EVERY_S = 0.2
     TRAIL_EVERY_S = 0.2
 
-    def __init__(self, sim, label: str | None = None, label_rgb=CYAN):
+    def __init__(self, sim, label: str | None = None, label_rgb=CYAN, quest: dict | None = None):
         self.sim = sim
         p = self.p = sim.client
         p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
@@ -176,14 +181,16 @@ class GuiScene:
         self.last_hud_t = -1.0
         self.hud_line = ("", WHITE)
         self.last_trail_t = -1.0
-        self.popups: list[tuple[int, float]] = []
 
-        # quest state
-        self.xp = 0
-        self.orbs_collected = 0
-        self.checkpoints_done = [False] * len(CHECKPOINTS_M)
-        self.quest_state = "active"  # active | complete | failed
+        # quest state (stage results are supplied by the caller, e.g. demo_walk)
+        self.quest = quest or {**DEFAULT_QUEST, "title": label or DEFAULT_QUEST["title"]}
+        self.fault_seen = False
+        self.fell_seen = False
+        self.event_banner = None
         self.banner: list = []
+        self.live = (0.0, 0.0)
+        self.bar_rgb = None
+        self.bar_y = 0.0
         self.panel_id = None
         self._frame = None
 
@@ -420,23 +427,14 @@ class GuiScene:
             self._cyl([pos[0], pos[1], top - 0.005], 0.16, 0.01, BLACK)
 
     def _build_quest_objects(self):
-        hw = TRACK_HALF_WIDTH_M
-        self.beacons = []
-        for i, x in enumerate(CHECKPOINTS_M):
-            ring = self._cyl([x, 0, 0.006], hw, 0.006, AMBER, alpha=0.45)
-            beam_l = self._cyl([x, -hw, 0.9], 0.03, 1.8, AMBER, alpha=0.55)
-            beam_r = self._cyl([x, hw, 0.9], 0.03, 1.8, AMBER, alpha=0.55)
-            gem = self._sphere([x, hw, 1.86], 0.07, AMBER)
-            self.beacons.append((ring, beam_l, beam_r, gem))
-            self.p.addUserDebugText(f"CP{i + 1}", [x - 0.08, hw, 2.0], textColorRGB=list(AMBER), textSize=1.2)
-        goal = CHECKPOINTS_M[-1]
-        self.p.addUserDebugText("GOAL", [goal - 0.12, -hw, 2.0], textColorRGB=list(GOLD), textSize=1.5)
-        self.orbs = [self._sphere([x, 0.0, 0.62], 0.045, CYAN, alpha=0.9) for x in ORBS_X]
-        self.orb_alive = [True] * len(self.orbs)
+        """Spotlight discs that follow the robot (cyan when healthy, red on a fault)."""
+        self.spot_glow = self._cyl([0, 0, 0.0035], 0.62, 0.001, CYAN, alpha=0.12, specular=(0, 0, 0))
+        self.spot_core = self._cyl([0, 0, 0.0045], 0.40, 0.001, CYAN, alpha=0.22, specular=(0, 0, 0))
+        self.spot_rgb = CYAN
 
     # -------------------------------------------------------------- per frame
     def update(self, t: float, pos: np.ndarray, lin_vel: np.ndarray, fell: bool):
-        """Called every physics step; does work at ~30 Hz."""
+        """Called every physics step; does work at ~20 Hz."""
         if t - self.last_frame_t < self.FRAME_EVERY_S:
             return
         self.last_frame_t = t
@@ -460,12 +458,13 @@ class GuiScene:
                 p.addUserDebugLine(self.trail_prev, cur, list(FAULT_RED if fell else CYAN), lineWidth=4.0)
             self.trail_prev = cur
 
-        self._animate_props(t)
-        self._update_quest(t, pos, fell)
-        self._tint_faults()
-        self._draw_quest_log(t, pos, lin_vel, fell)
+        weak = [c for c in self.sim.last_commands if c.max_torque < rc.MAX_TORQUE_NM - 1e-9]
+        self._animate_props(t, pos, weak)
+        self._update_events(t, weak, fell)
+        self._tint_faults(weak)
+        self._draw_overlay(t, pos, lin_vel, fell, weak)
 
-    def _animate_props(self, t):
+    def _animate_props(self, t, pos, weak):
         p = self.p
         for k, (arm, joints) in enumerate(self.arms):
             for j, jid in enumerate(joints):
@@ -475,57 +474,38 @@ class GuiScene:
                 if j == 3:
                     q = -1.4 + 0.4 * math.sin(0.7 * t + k)
                 p.resetJointState(arm, jid, q)
-        for i, orb in enumerate(self.orbs):
-            if self.orb_alive[i]:
-                p.resetBasePositionAndOrientation(orb, [ORBS_X[i], 0.0, 0.62 + 0.05 * math.sin(3 * t + i)],
-                                                  [0, 0, 0, 1])
         ang = -t * 0.5
         c = self.clock_center
         p.resetBasePositionAndOrientation(
             self.clock_hand, [c[0] + 0.08 * math.sin(ang), c[1], c[2] + 0.08 * math.cos(ang)],
             p.getQuaternionFromEuler([0, ang, 0]))
+        # spotlight follows the robot and turns red once a motor is faulted
+        rgb = FAULT_RED if weak else CYAN
+        if rgb != self.spot_rgb:
+            p.changeVisualShape(self.spot_glow, -1, rgbaColor=[*rgb, 0.12])
+            p.changeVisualShape(self.spot_core, -1, rgbaColor=[*rgb, 0.22])
+            self.spot_rgb = rgb
+        pulse = 0.004 + 0.0005 * math.sin(4 * t)
+        p.resetBasePositionAndOrientation(self.spot_glow, [pos[0], pos[1], 0.0035], [0, 0, 0, 1])
+        p.resetBasePositionAndOrientation(self.spot_core, [pos[0], pos[1], pulse], [0, 0, 0, 1])
 
-    def _popup(self, txt, pos, rgb, t, size=1.6, life=1.6):
-        uid = self.p.addUserDebugText(txt, list(pos), textColorRGB=list(rgb), textSize=size)
-        self.popups.append((uid, t + life))
+    def _update_events(self, t, weak, fell):
+        """Timed event banners: motor failure, robot down."""
+        if weak and not self.fault_seen:
+            self.fault_seen = True
+            self.event_banner = (("MOTOR FAILURE", FAULT_RED, 2.8),
+                                 (f"{weak[0].name.replace('_', ' ')} offline", FAULT_RED, 1.5), t + 2.5)
+        if fell and not self.fell_seen:
+            self.fell_seen = True
+            self.event_banner = (("ROBOT DOWN", FAULT_RED, 2.8), ("", FAULT_RED, 1.5), float("inf"))
+        if self.event_banner and t > self.event_banner[2]:
+            self.event_banner = None
+        self.banner = list(self.event_banner[:2]) if self.event_banner else []
 
-    def _update_quest(self, t, pos, fell):
-        p = self.p
-        x = float(pos[0])
-        for uid, until in list(self.popups):
-            if t >= until:
-                p.removeUserDebugItem(uid)
-                self.popups.remove((uid, until))
-        if self.quest_state != "active":
-            return
-        for i, ox in enumerate(ORBS_X):
-            if self.orb_alive[i] and x >= ox - 0.05:
-                self.orb_alive[i] = False
-                p.resetBasePositionAndOrientation(self.orbs[i], [ox, 0, -5], [0, 0, 0, 1])
-                self.orbs_collected += 1
-                self.xp += XP_ORB
-                self._popup(f"+{XP_ORB} XP", [ox, 0, 0.8], CYAN, t, size=1.3, life=1.0)
-        for i, cx in enumerate(CHECKPOINTS_M):
-            if not self.checkpoints_done[i] and x >= cx:
-                self.checkpoints_done[i] = True
-                self.xp += XP_CHECKPOINT
-                for b in self.beacons[i]:
-                    p.changeVisualShape(b, -1, rgbaColor=[*GREEN, 0.6])
-                self._popup(f"CHECKPOINT {i + 1}/{len(CHECKPOINTS_M)}  +{XP_CHECKPOINT} XP",
-                            [cx - 0.5, 0, 1.25], GREEN, t, size=1.7)
-        if all(self.checkpoints_done):
-            self.quest_state = "complete"
-            self.xp += XP_QUEST
-            self.banner = [(f"QUEST COMPLETE!   +{XP_QUEST} XP", GOLD, 2.8)]
-        elif fell:
-            self.quest_state = "failed"
-            self.banner = [("QUEST FAILED", FAULT_RED, 3.0),
-                           ("motor fault - the gait must adapt", FAULT_RED, 1.5)]
-
-    def _tint_faults(self):
+    def _tint_faults(self, weak):
         """Tint any weakened/dead motor's link red."""
-        for c in self.sim.last_commands:
-            if c.max_torque < rc.MAX_TORQUE_NM - 1e-9 and c.name not in self.tinted:
+        for c in weak:
+            if c.name not in self.tinted:
                 self.p.changeVisualShape(self.sim.robot_id, c.joint_index, rgbaColor=[*FAULT_RED, 1])
                 self.tinted.add(c.name)
 
@@ -545,83 +525,147 @@ class GuiScene:
         return (eye + fwd * depth + right * (sx * tan_h * depth) + up * (sy * tan_v * depth)).tolist()
 
     # Screen layout (normalised coords, -1..1)
-    PANEL_RECT = (-0.985, 0.975, -0.34, 0.03)  # x0, y0 (top), x1, y1 (bottom)
-    LINE_STEP = 0.07
-    BANNER_Y = 0.6
+    PANEL_RECT = (-0.985, 0.975, -0.30, 0.31)  # x0, y0 (top), x1, y1 (bottom)
+    LINE_STEP = 0.075
+    BANNER_Y = 0.62
     BANNER_STEP = 0.14
+    BAR_SEGMENTS = 24
+
+    def _panel_local(self, sx, sy, z=0.015):
+        """Panel-frame position of screen point (sx, sy); overlay text hangs off the panel."""
+        _, _, _, _, tan_h, tan_v = self._frame
+        d = OVERLAY_DEPTH + 0.02
+        x0, y0, x1, y1 = self.PANEL_RECT
+        return [(sx - (x0 + x1) / 2) * tan_h * d, (sy - (y0 + y1) / 2) * tan_v * d, z]
 
     def _place_overlay(self):
-        """Move the panel (and all text parented to it) to stay pinned to the screen."""
+        """Pin the panel (and its parented text) plus accent/progress bodies to the screen."""
         eye, fwd, right, up, tan_h, tan_v = self._frame
         quat = _quat_from_matrix(np.column_stack([right, up, -fwd]))
         x0, y0, x1, y1 = self.PANEL_RECT
         d = OVERLAY_DEPTH + 0.02
-        center = self._screen_point((x0 + x1) / 2, (y0 + y1) / 2, d)
+        center = np.array(self._screen_point((x0 + x1) / 2, (y0 + y1) / 2, d))
+        p = self.p
         if self.panel_id is None:
             half = (abs(x1 - x0) * tan_h * d / 2, abs(y1 - y0) * tan_v * d / 2, 0.0005)
-            vis = self.p.createVisualShape(self.p.GEOM_BOX, halfExtents=half, rgbaColor=[*PANEL, 0.72],
-                                           specularColor=[0, 0, 0])
-            self.panel_id = self._body(vis, center, quat)
+            self.panel_id = self._body(self._vis("box", half, [*PANEL, 0.78], (0, 0, 0)), center.tolist(), quat)
+            accent_half = (0.006 * tan_h * d, half[1], 0.0006)
+            self.accent_id = self._body(self._vis("box", accent_half, [*GOLD, 0.97], (0, 0, 0)), center.tolist(), quat)
+            seg_w = (abs(x1 - x0) - 0.1) / self.BAR_SEGMENTS
+            seg_half = (seg_w * 0.4 * tan_h * d, 0.012 * tan_v * d, 0.0006)
+            self.bar_ids = [self._body(self._vis("box", seg_half, [*BAR_EMPTY, 0.97], (0, 0, 0)), center.tolist(), quat)
+                            for _ in range(self.BAR_SEGMENTS)]
+            self.bar_filled = [False] * self.BAR_SEGMENTS
+            self.bar_xs = [x0 + 0.05 + seg_w * (k + 0.5) for k in range(self.BAR_SEGMENTS)]
         else:
-            self.p.resetBasePositionAndOrientation(self.panel_id, center, quat)
+            p.resetBasePositionAndOrientation(self.panel_id, center.tolist(), quat)
 
-    def _panel_local(self, sx, sy):
-        """Panel-frame position of screen point (sx, sy); all overlay text hangs off the panel."""
-        _, _, _, _, tan_h, tan_v = self._frame
-        d = OVERLAY_DEPTH + 0.02
-        x0, y0, x1, y1 = self.PANEL_RECT
-        return [(sx - (x0 + x1) / 2) * tan_h * d, (sy - (y0 + y1) / 2) * tan_v * d, 0.015]
+        def to_world(local):
+            return (center + right * local[0] + up * local[1] - fwd * local[2]).tolist()
 
-    def _draw_quest_log(self, t, pos, lin_vel, fell):
-        """Quest log + status panel pinned top-left; banners top-centre."""
+        p.resetBasePositionAndOrientation(self.accent_id, to_world(self._panel_local(x0 + 0.006, (y0 + y1) / 2,
+                                                                                      0.001)), quat)
+        for k, bid in enumerate(self.bar_ids):
+            p.resetBasePositionAndOrientation(bid, to_world(self._panel_local(self.bar_xs[k], self.bar_y, 0.001)),
+                                              quat)
+
+    def _set_progress(self, frac, rgb):
+        n = int(round(max(0.0, min(1.0, frac)) * self.BAR_SEGMENTS))
+        for k, bid in enumerate(self.bar_ids):
+            want = k < n
+            if want != self.bar_filled[k] or (want and self.bar_rgb != rgb):
+                self.p.changeVisualShape(bid, -1, rgbaColor=[*(rgb if want else BAR_EMPTY), 0.97])
+                self.bar_filled[k] = want
+        self.bar_rgb = rgb
+
+    def _draw_overlay(self, t, pos, lin_vel, fell, weak):
+        """Quest log pinned top-left; event banners top-centre."""
         self._frame = self._camera_frame()
+        q = self.quest
+        active = q["stage"]
+        x0, y0 = self.PANEL_RECT[0], self.PANEL_RECT[1]
+        row = lambda k: y0 - 0.1 - self.LINE_STEP * k
+        self.bar_y = row(6) + 0.012
         self._place_overlay()
-        failed = self.quest_state == "failed"
-        complete = self.quest_state == "complete"
-        lines = []
-        if self.label:
-            lines.append(("label", self.label, self.label_rgb, 1.5))
-        lines.append(("title", QUEST_TITLE, GOLD, 1.5))
-        lines.append(("sub", QUEST_SUBTITLE, WHITE, 1.15))
-        lines.append(("obj0", "[x] Power up and stand", GREEN, 1.15))
-        for i, cx in enumerate(CHECKPOINTS_M):
-            done = self.checkpoints_done[i]
-            lines.append((f"obj{i + 1}", f"[{'x' if done else ' '}] Reach checkpoint {i + 1} ({cx:.0f} m)",
-                          GREEN if done else PENDING, 1.15))
-        if failed:
-            upright = ("[!] Stay upright - FAILED", FAULT_RED)
-        elif complete:
-            upright = ("[x] Stay upright", GREEN)
-        else:
-            upright = ("[ ] Stay upright", PENDING)
-        lines.append(("upright", upright[0], upright[1], 1.15))
-        lines.append(("xp", f"XP {self.xp:4d}     ORBS {self.orbs_collected}/{len(ORBS_X)}", CYAN, 1.3))
+
+        lines = [("title", q["title"], GOLD, 1.6, 0), ("sub", q["subtitle"], PENDING, 1.05, 1)]
         if t - self.last_hud_t >= self.HUD_EVERY_S or fell:
             self.last_hud_t = t
-            dist = float(pos[0] - self.start_pos[0])
-            status = "FALLEN" if fell else "WALKING"
-            self.hud_line = (f"t {t:4.1f}s  {dist:4.2f} m  {lin_vel[0]:4.2f} m/s  {status}",
-                             FAULT_RED if fell else WHITE)
-        lines.append(("hud", self.hud_line[0], self.hud_line[1], 1.15))
-        weak = [c for c in self.sim.last_commands if c.max_torque < rc.MAX_TORQUE_NM - 1e-9]
+            self.live = (float(pos[0] - self.start_pos[0]), float(lin_vel[0]))
+        dist, speed = self.live
+        for i, st in enumerate(q["stages"]):
+            res = st.get("result")
+            if i < active and res:
+                rgb = FAULT_RED if res["fell"] else GREEN
+                head = f"[x] STAGE {i + 1}  {st['name']}"
+                detail = f"     {res['distance_m']:.2f} m   " + (
+                    f"fell at {res['fall_time_s']:.1f} s" if res["fell"] else "no fall")
+            elif i == active:
+                rgb = st.get("rgb", CYAN)
+                head = f"> STAGE {i + 1}  {st['name']}"
+                status = "DOWN" if fell else "walking"
+                detail = f"     {dist:4.2f} m   {speed:4.2f} m/s   {status}"
+            else:
+                rgb = DIM
+                head = f"[ ] STAGE {i + 1}  {st['name']}"
+                detail = "     waiting"
+            lines.append((f"h{i}", head, rgb, 1.25, 2.3 + 1.7 * i))
+            lines.append((f"d{i}", detail, FAULT_RED if (i == active and fell) else WHITE, 1.1, 3.1 + 1.7 * i))
+        dur = q["stages"][active]["duration_s"]
+        lines.append(("time", f"STAGE {active + 1} PROGRESS   {min(t, dur):4.1f} / {dur:.0f} s", PENDING, 1.0, 5.75))
         if weak:
             lines.append(("fault", "MOTOR FAULT: " + ", ".join(
-                f"{c.name} {100 * c.max_torque / rc.MAX_TORQUE_NM:.0f}%" for c in weak), FAULT_RED, 1.15))
+                f"{c.name} {100 * c.max_torque / rc.MAX_TORQUE_NM:.0f}%" for c in weak), FAULT_RED, 1.1, 7.1))
+        for key, txt, rgb, size, k in lines:
+            self._text(key, txt, self._panel_local(x0 + 0.055, row(k)), rgb, size, parent=self.panel_id)
+        self._set_progress(t / dur, FAULT_RED if fell else q["stages"][active].get("rgb", CYAN))
 
-        x0, y0 = self.PANEL_RECT[0], self.PANEL_RECT[1]
-        for k, (key, txt, rgb, size) in enumerate(lines):
-            self._text(key, txt, self._panel_local(x0 + 0.03, y0 - 0.1 - self.LINE_STEP * k), rgb, size,
-                       parent=self.panel_id)
+        shown = set()
         for k, (txt, rgb, size) in enumerate(self.banner):
-            local = self._panel_local(max(-0.30, 0.1 - 0.009 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
+            local = self._panel_local(max(-0.25, 0.08 - 0.0095 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
             self._text(f"banner{k}", txt, local, rgb, size, parent=self.panel_id)
+            shown.add(f"banner{k}")
+        for k in range(3):  # clear banners that are no longer shown
+            key = f"banner{k}"
+            if key not in shown and self.text_sig.get(key, ("",))[0] != "":
+                self._text(key, "", [0, 0, 0], WHITE, 1.0, parent=self.panel_id)
 
     def finish(self, result_line: str):
+        """End-of-set banner: stage summary, or the quest verdict after the last stage."""
         if self._frame is None or self.panel_id is None:
             return
-        rgb = GOLD if self.quest_state == "complete" else (FAULT_RED if self.quest_state == "failed" else WHITE)
-        local = self._panel_local(-0.009 * 1.9 * len(result_line), -0.8)
-        self._text("result", result_line, local, rgb, 1.9, parent=self.panel_id)
+        q = self.quest
+        i = q["stage"]
+        fell = self.fell_seen
+        pos = self.sim.base_state()[0]
+        dist = float(pos[0] - self.start_pos[0]) if self.start_pos is not None else 0.0
+        # final, exact numbers for the finished stage (the live line refreshes at 5 Hz)
+        x0, y0 = self.PANEL_RECT[0], self.PANEL_RECT[1]
+        row = lambda k: y0 - 0.1 - self.LINE_STEP * k
+        done_rgb = FAULT_RED if fell else GREEN
+        self._text(f"h{i}", f"[x] STAGE {i + 1}  {q['stages'][i]['name']}",
+                   self._panel_local(x0 + 0.055, row(2.3 + 1.7 * i)), done_rgb, 1.25, parent=self.panel_id)
+        self._text(f"d{i}", f"     {dist:.2f} m   " + ("fell" if fell else "no fall"),
+                   self._panel_local(x0 + 0.055, row(3.1 + 1.7 * i)), WHITE, 1.1, parent=self.panel_id)
+        if i < len(q["stages"]) - 1:
+            title = (f"STAGE {i + 1} COMPLETE", GOLD) if not fell else (f"STAGE {i + 1} FAILED", FAULT_RED)
+            sub = (result_line, WHITE)
+        else:
+            base = q["stages"][0].get("result")
+            if fell:
+                title = ("QUEST FAILED", FAULT_RED)
+            else:
+                title = ("QUEST COMPLETE", GOLD)
+            if base and base["distance_m"] > 0:
+                lost = 100 * (1 - dist / base["distance_m"])
+                sub = (f"injury cost {lost:.0f}% of the distance - the gait must adapt"
+                       if fell or lost > 10 else "the robot coped with the injury", FAULT_RED if fell else WHITE)
+            else:
+                sub = (result_line, WHITE)
+        self.banner = [(title[0], title[1], 3.0), (sub[0], sub[1], 1.5)]
+        for k, (txt, rgb, size) in enumerate(self.banner):
+            local = self._panel_local(max(-0.25, 0.08 - 0.0095 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
+            self._text(f"banner{k}", txt, local, rgb, size, parent=self.panel_id)
 
 
 def _quat_from_matrix(m: np.ndarray) -> list:
