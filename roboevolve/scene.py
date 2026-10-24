@@ -168,11 +168,12 @@ class GuiScene:
         if self.start_pos is None:
             self.start_pos = pos.copy()
 
-        # smooth follow camera with a slow orbit
+        # smooth side-on tracking shot with a gentle sway; looking across the
+        # track means gates are seen edge-on and never hide the robot
         tgt = np.array([pos[0], pos[1], 0.30])
         self.cam_target = tgt if self.cam_target is None else self.cam_target + 0.12 * (tgt - self.cam_target)
-        yaw = 40.0 + 25.0 * math.sin(t * 0.15)
-        p.resetDebugVisualizerCamera(2.2, yaw, -22.0, self.cam_target.tolist())
+        yaw = 12.0 + 10.0 * math.sin(t * 0.2)
+        p.resetDebugVisualizerCamera(2.3, yaw, -20.0, self.cam_target.tolist())
 
         # glowing trail of the body path
         cur = [float(pos[0]), float(pos[1]), 0.012]
