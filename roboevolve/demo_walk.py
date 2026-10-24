@@ -10,8 +10,8 @@ Stage 1 walks with the baseline controller; stage 2 uses the same controller
 with a motor disabled (faults.py ``torque_loss``, strength 0 = dead motor);
 stage 3 keeps the same injury but swaps in the gait found by Person 3's
 optimiser (``roboevolve/data/adapted_gait.json``, produced by
-``python -m roboevolve.make_adapted_gait``).  Injured stages run their full
-duration even after a fall.
+``python -m roboevolve.make_adapted_gait``).  Injured stages keep running after
+a fall, and end once the fallen robot has not moved for 2 s (``--still-stop``).
 """
 
 from __future__ import annotations
@@ -58,6 +58,9 @@ def main(argv=None):
     ap.add_argument("--fault-strength", type=float, default=0.0, help="0 = dead motor, 1 = healthy")
     ap.add_argument("--fault-start", type=float, default=0.0, help="injury onset within the injured stages (s)")
     ap.add_argument("--hold", type=float, default=4.0, help="GUI: seconds to show each stage's final frame")
+    ap.add_argument("--still-stop", type=float, default=2.0,
+                    help="end an injured stage once the fallen robot has not moved for this many seconds "
+                         "(0 = always run the full duration)")
     ap.add_argument("--plot", action="store_true", help="plot trajectories of all stages with matplotlib")
     args = ap.parse_args(argv)
 
@@ -106,7 +109,8 @@ def main(argv=None):
         quest["stage"] = i
         res = simulate(st["params"], fault=st["fault"], seed=args.seed, duration_s=st["duration_s"],
                        gui=not args.headless, stop_on_fall=st["stop_on_fall"],
-                       gui_hold_s=args.hold, gui_quest=quest)
+                       gui_hold_s=args.hold, gui_quest=quest,
+                       stop_when_still_s=args.still_stop if args.still_stop > 0 else None)
         quest["stages"][i]["result"] = {k: res[k] for k in ("distance_m", "fell", "fall_time_s")}
         results[st["name"]] = res
         print(json.dumps({k: res[k] for k in SUMMARY_KEYS}, indent=2), flush=True)

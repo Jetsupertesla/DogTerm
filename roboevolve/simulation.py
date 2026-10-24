@@ -30,7 +30,6 @@ When ``simulate(..., fault=<dict>)`` is called, the hook is obtained from
 from __future__ import annotations
 
 import importlib
-import math
 import time
 from typing import Callable
 
@@ -51,6 +50,9 @@ GROUND_LATERAL_FRICTION = 1.0
 # so independent evaluators (evaluation.py requires a sustained 0.25 s posture
 # violation) can confirm it from telemetry.
 FALL_GRACE_S = 0.5
+# stop_when_still_s: after a fall, the base counts as "not moving" while it
+# stays within this distance of where the still period started.
+STILL_TOLERANCE_M = 0.02
 
 MotorHook = Callable[[list, float], list]
 
@@ -258,6 +260,7 @@ def simulate(
     gui_label: str | None = None,
     gui_label_rgb: tuple | None = None,
     gui_quest: dict | None = None,
+    stop_when_still_s: float | None = None,
 ) -> dict:
     """Run one trial and return metrics + telemetry.
 
@@ -277,6 +280,9 @@ def simulate(
       gui_label, gui_label_rgb: optional banner shown in the GUI scene.
       gui_quest: optional quest description for the GUI overlay (see
         scene.DEFAULT_QUEST); purely visual.
+      stop_when_still_s: if set, end the trial once the robot has fallen and its
+        base has stayed within STILL_TOLERANCE_M of one spot for this long
+        (works with stop_on_fall=False; default None = never).
 
     Returns a dict:
       distance_m         forward displacement (+x, the robot's initial heading)
@@ -314,6 +320,7 @@ def simulate(
         fell = False
         fall_time = None
         fall_reason = None
+        still_ref, still_since = None, None
         wall_start = time.perf_counter()
 
         for _ in range(n_steps):
@@ -335,6 +342,11 @@ def simulate(
                     fell, fall_time, fall_reason = True, sim.time_s, reason
             stopping = (stop_on_fall and fell
                         and sim.time_s >= fall_time + FALL_GRACE_S - 1e-9)
+            if stop_when_still_s is not None and fell and not stopping:
+                if still_ref is None or np.linalg.norm(pos - still_ref) > STILL_TOLERANCE_M:
+                    still_ref, still_since = pos.copy(), sim.time_s
+                elif sim.time_s - still_since >= stop_when_still_s - 1e-9:
+                    stopping = True
             # Always sample the final step so telemetry ends at sim_time_s
             # (evaluation.py checks coverage of the whole trial).
             final = stopping or sim.step_count == n_steps

@@ -53,7 +53,10 @@ The GUI (`scene.py`) is a robotics science lab with a game-style quest layer:
 `--hold N` keeps each set's final frame on screen for N seconds (default 4).
 
 Demo sets:
-- **Set 2 (injury):** defaults to a dead front-left calf (`torque_loss`, strength 0) from t = 0. It runs the full 20 s even after a fall (`--injured-duration`, `--fault-start`, `--fault-strength`).
+- **Set 2 (injury):** defaults to a dead front-left calf (`torque_loss`, strength 0) from t = 0 (`--injured-duration`, `--fault-start`, `--fault-strength`).
+  - Injured stages keep running after a fall, and end once the fallen robot has stayed within 2 cm of one spot for 2 s (`--still-stop`, 0 = always run the full duration).
+  - This uses `simulate(..., stop_when_still_s=...)`, which is off by default.
+  - With the default injury, the dog falls at 2.6 s and the stage ends at 7.1 s.
 - **Measured with default gait params:** healthy, 4.53 m in 12 s; injured, 0.80 m and a fall at 2.6 s.
 - **Milder injuries for comparison:** a calf at 30% strength still covers 7.6 m in 20 s, and thigh faults are mostly tolerated.
 - **Stage 3 (adapted gait):** replays the gait in `roboevolve/data/adapted_gait.json` with the same injury for the same 20 s.
