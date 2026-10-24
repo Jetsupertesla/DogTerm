@@ -71,9 +71,9 @@ class QuadrupedSim:
                  gui_quest: dict | None = None):
         self.gui = gui
         if gui:
-            from .scene import WINDOW_OPTIONS
+            from .scene import window_options
             self.client = bullet_client.BulletClient(connection_mode=pybullet.GUI,
-                                                     options=WINDOW_OPTIONS)
+                                                     options=window_options())
         else:
             self.client = bullet_client.BulletClient(connection_mode=pybullet.DIRECT)
         p = self.client
