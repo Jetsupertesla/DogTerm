@@ -592,6 +592,8 @@ def simulate_parallel(
                 window_open = False  # GUI window closed mid-run: finish headless
                 print("GUI window closed; finishing the trial without it", flush=True)
                 continue
+            if f == 1:  # the first frame builds every label/plate (~0.5 s): start the clock after it
+                wall_start = time.perf_counter() - t_now
             if realtime:
                 lag = t_now - (time.perf_counter() - wall_start)
                 if lag > 0:

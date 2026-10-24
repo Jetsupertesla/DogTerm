@@ -239,7 +239,7 @@ class GuiScene:
         tgt = np.array([pos[0] + 0.35, pos[1], 0.40])
         self.cam_target = tgt if self.cam_target is None else self.cam_target + 0.12 * (tgt - self.cam_target)
         yaw = 8.0 + 8.0 * math.sin(t * 0.2)
-        p.resetDebugVisualizerCamera(2.2, yaw, -15.0, self.cam_target.tolist())
+        self._set_camera(2.2, yaw, -15.0, self.cam_target.tolist())
 
         # path trail
         if t - self.last_trail_t >= self.TRAIL_EVERY_S:
@@ -346,16 +346,99 @@ class GuiScene:
                 self.tinted.add(c.name)
 
     # ---------------------------------------------------- screen-space overlay
+    def _set_camera(self, dist, yaw, pitch, target):
+        """Move the GUI camera and remember exactly where it was put (see _camera_frame)."""
+        self._cam_params = (float(dist), float(yaw), float(pitch), [float(v) for v in target])
+        self.p.resetDebugVisualizerCamera(dist, yaw, pitch, list(target))
+
     def _camera_frame(self):
         cam = self.p.getDebugVisualizerCamera()
         fwd = np.array(cam[5]) / np.linalg.norm(cam[5])
         right = np.array(cam[6]) / np.linalg.norm(cam[6])
         up = np.array(cam[7]) / np.linalg.norm(cam[7])
         eye = np.array(cam[11]) - fwd * cam[10]
+        if getattr(self, "_cam_params", None):
+            # getDebugVisualizerCamera reports the last *rendered* camera; while the
+            # camera moves that lags a frame and screen-pinned plates would trail
+            # their text.  Rebuild the view from the parameters we just set.
+            dist, yaw, pitch, target = self._cam_params
+            m = np.array(self.p.computeViewMatrixFromYawPitchRoll(target, dist, yaw, pitch, 0, 2)).reshape(4, 4)
+            rot = m[:3, :3]                      # column-major: rows of rot.T are the camera axes
+            right, up, back = rot[:, 0], rot[:, 1], rot[:, 2]
+            fwd = -back
+            eye = np.array(target) - fwd * dist
         proj = cam[3]  # column-major 4x4: [0] = 1/(aspect*tan(fov/2)), [5] = 1/tan(fov/2)
         if not proj[0] or not proj[5]:
             return None  # the window has not rendered a frame yet
+        self._win_px = (cam[0], cam[1])
         return eye, fwd, right, up, 1.0 / proj[0], 1.0 / proj[5]
+
+    # ------------------------------------------------- text backing plates
+    # Debug text has no background, so every label gets a dark translucent plate
+    # behind it.  Text is drawn at a fixed pixel size, so plates live in screen
+    # space too (just in front of the camera; the text itself is drawn on top).
+    # Text metrics measured in PyBullet's GUI (per unit of textSize): text is
+    # left-aligned at its anchor and sits just above it.
+    TEXT_PX_PER_CHAR = 8.6
+    TEXT_PX_TALL = 13.0       # line box height incl. ascenders/descenders
+    TEXT_PX_ABOVE = 8.0       # line box centre above the anchor
+    PLATE_PAD_PX = 7.0
+    PLATE_RGBA = (0.02, 0.04, 0.09, 0.74)  # < 1 alpha: no shadow, drawn in the transparent pass
+
+    def _text_width_norm(self, txt: str, size: float) -> float:
+        w_px = self._win_px[0] if getattr(self, "_win_px", None) else 1280
+        return len(txt) * self.TEXT_PX_PER_CHAR * size * 2 / w_px
+
+    def _project(self, world):
+        """Normalised screen coords (-1..1) of a world point, or None if behind the camera."""
+        eye, fwd, right, up, tan_h, tan_v = self._frame
+        v = np.asarray(world, float) - eye
+        z = float(v @ fwd)
+        if z <= 0.05:
+            return None
+        return float(v @ right) / (z * tan_h), float(v @ up) / (z * tan_v)
+
+    def _plate_for_text(self, key, sx, sy, txt, size, width_chars: int | None = None, center_x: float | None = None):
+        """Place (or hide, for empty text) a backing plate behind text anchored at screen (sx, sy).
+
+        Plates are only *moved* per frame; resizing means rebuilding a body (a
+        visible hitch), so callers whose text changes length pass a fixed
+        ``width_chars``.  ``center_x`` centres the plate there instead of
+        starting it at the text.
+        """
+        if not txt or self._frame is None:
+            self._hide_plate(key)
+            return
+        w_px, h_px = getattr(self, "_win_px", None) or (1280, 720)
+        kx, ky = 2 / w_px, 2 / h_px
+        pad = self.PLATE_PAD_PX
+        w = self._text_width_norm("x" * (width_chars or len(txt)), size) + 2 * pad * kx
+        h = (self.TEXT_PX_TALL * size + 2 * pad) * ky
+        cx = sx - pad * kx + w / 2 if center_x is None else center_x
+        cy = sy + self.TEXT_PX_ABOVE * size * ky
+        self._place_plate(key, cx, cy, w, h)
+
+    def _place_plate(self, key, cx, cy, w, h):
+        eye, fwd, right, up, tan_h, tan_v = self._frame
+        d = OVERLAY_DEPTH + 0.03
+        half = (round(w / 2 * tan_h * d, 4), round(h / 2 * tan_v * d, 4), 0.0004)
+        quat = _quat_from_matrix(np.column_stack([right, up, -fwd]))
+        center = self._screen_point(cx, cy, d)
+        plates = self.__dict__.setdefault("_plates", {})
+        body, size = plates.get(key, (None, None))
+        if body is not None and size != half:
+            self.p.removeBody(body)
+            body = None
+        if body is None:
+            body = self.lab.body(self.lab.vis("box", half, list(self.PLATE_RGBA), (0, 0, 0)), center, quat)
+            plates[key] = (body, half)
+        else:
+            self.p.resetBasePositionAndOrientation(body, center, quat)
+
+    def _hide_plate(self, key):
+        body, _ = self.__dict__.get("_plates", {}).get(key, (None, None))
+        if body is not None:
+            self.p.resetBasePositionAndOrientation(body, [0, 0, -50], [0, 0, 0, 1])
 
     def _screen_point(self, sx, sy, depth=OVERLAY_DEPTH):
         """World point that appears at normalised screen coords (sx, sy in -1..1)."""
@@ -366,6 +449,7 @@ class GuiScene:
     PANEL_RECT = (-0.1, 0.1, 0.1, -0.1)  # invisible anchor rect (x0, y0, x1, y1)
     BANNER_Y = 0.62
     BANNER_STEP = 0.14
+    BANNER_BAR_CHARS = {3.0: 20, 2.8: 21, 2.6: 22, 1.5: 66, 1.4: 70}  # bar width per text size (chars)
 
     def _panel_local(self, sx, sy, z=0.015):
         """Panel-frame position of screen point (sx, sy); overlay text hangs off the panel."""
@@ -405,13 +489,19 @@ class GuiScene:
         """Draw self.banner (list of (text, rgb, size)) top-centre; clear unused lines."""
         shown = set()
         for k, (txt, rgb, size) in enumerate(self.banner):
-            local = self._panel_local(max(-0.25, 0.08 - 0.0095 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
-            self._text(f"banner{k}", txt, local, rgb, size, parent=self.panel_id)
+            sx = -self._text_width_norm(txt, size) / 2
+            sy = self.BANNER_Y - self.BANNER_STEP * k
+            self._text(f"banner{k}", txt, self._panel_local(sx, sy), rgb, size, parent=self.panel_id)
+            # fixed-width, centred banner bars: never resized, so no hitch when the message changes
+            self._plate_for_text(f"banner{k}", sx, sy, txt, size, width_chars=self.BANNER_BAR_CHARS.get(size, 64),
+                                 center_x=0.0)
             shown.add(f"banner{k}")
         for k in range(max_lines):
             key = f"banner{k}"
-            if key not in shown and self.text_sig.get(key, ("",))[0] != "":
-                self._text(key, "", [0, 0, 0], WHITE, 1.0, parent=self.panel_id)
+            if key not in shown:
+                self._hide_plate(key)
+                if self.text_sig.get(key, ("",))[0] != "":
+                    self._text(key, "", [0, 0, 0], WHITE, 1.0, parent=self.panel_id)
 
     def finish(self, result_line: str):
         """End-of-set banner: stage summary, or the quest verdict after the last stage."""
@@ -451,9 +541,7 @@ class GuiScene:
             title = (f"STAGE {i + 1} COMPLETE", GOLD) if not fell else (f"STAGE {i + 1} FAILED", FAULT_RED)
             sub = (result_line, WHITE)
         self.banner = [(title[0], title[1], 3.0), (sub[0], sub[1], 1.5)]
-        for k, (txt, rgb, size) in enumerate(self.banner):
-            local = self._panel_local(max(-0.25, 0.08 - 0.0095 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
-            self._text(f"banner{k}", txt, local, rgb, size, parent=self.panel_id)
+        self._render_banners()
 
 
 def _quat_from_matrix(m: np.ndarray) -> list:
