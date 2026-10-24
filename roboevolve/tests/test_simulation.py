@@ -12,7 +12,7 @@ import pytest
 from roboevolve import robot_config as rc
 from roboevolve.controller import (DEFAULT_CONTROLLER_PARAMS, GaitController,
                                    leg_fk, leg_ik, validate_params)
-from roboevolve.simulation import (TIME_STEP_S, QuadrupedSim, send_motor_commands,
+from roboevolve.simulation import (FALL_GRACE_S, TIME_STEP_S, QuadrupedSim, send_motor_commands,
                                    simulate)
 
 STAND_PARAMS = {"stride_scale": 0.0, "step_height_m": 0.0}
@@ -185,14 +185,58 @@ def test_d_validate_params():
     assert validate_params(None) == validate_params(DEFAULT_CONTROLLER_PARAMS)
 
 
-def test_fault_without_faults_module_is_explicit():
-    try:
-        import roboevolve.faults  # noqa: F401
-        pytest.skip("faults.py exists; integration owned by Person 2")
-    except ImportError:
-        pass
-    with pytest.raises(NotImplementedError):
-        simulate(DEFAULT_CONTROLLER_PARAMS, fault={"motor": "front_left_calf"}, duration_s=0.1)
+# ------------------------------------------- Integration with faults.py / evaluation.py
+def test_fault_dict_routes_through_faults_module():
+    """simulate(fault=...) uses faults.make_motor_hook via send_motor_commands."""
+    pytest.importorskip("roboevolve.faults")
+    fault = {"joint": "front_left_calf", "type": "torque_loss", "strength": 0.0, "start_time_s": 2.0}
+    res = simulate(DEFAULT_CONTROLLER_PARAMS, fault=fault, duration_s=4.0, stop_on_fall=False)
+    tel = res["telemetry"]
+    k = rc.MOTOR_NAMES.index("front_left_calf")
+    before, after = tel["t"] < 2.0, tel["t"] >= 2.0 + TIME_STEP_S
+    assert np.all(tel["cmd_max_torque"][before, k] == rc.MAX_TORQUE_NM)
+    assert np.all(tel["cmd_max_torque"][after, k] == 0.0)
+    assert np.abs(tel["applied_torque"][after, k]).max() < 1e-6
+    others = np.delete(tel["cmd_max_torque"], k, axis=1)
+    assert np.all(others == rc.MAX_TORQUE_NM)
+    _report("FL calf torque loss at 2 s", res)
+
+
+def test_evaluation_accepts_simulation_result():
+    evaluation = pytest.importorskip("roboevolve.evaluation")
+    cfg = evaluation.EvaluationConfig(task_duration_s=6.0)
+    raw = simulate(DEFAULT_CONTROLLER_PARAMS, duration_s=6.0)
+    out = evaluation.evaluate_simulation_result(raw, cfg)
+    m = out["metrics"]
+    print(f"\nevaluation: forward={m['forward_distance']:.3f} m score={m['score']:.2f} "
+          f"success={m['success']} covers_trial={m['covers_trial']}")
+    assert m["covers_trial"] and m["task_completed"]
+    assert m["forward_distance"] == pytest.approx(raw["distance_m"], abs=0.02)
+    assert out["score_is_placeholder"] is False
+
+
+def test_telemetry_ends_at_fall_time():
+    """When a trial stops on a fall, the last sample is at the fall time."""
+    fault = {"joint": "front_left_calf", "type": "torque_loss", "strength": 0.0, "start_time_s": 1.0}
+    pytest.importorskip("roboevolve.faults")
+    res = simulate(DEFAULT_CONTROLLER_PARAMS, fault=fault, duration_s=12.0)
+    tel = res["telemetry"]
+    assert tel["t"][-1] == res["sim_time_s"]
+    assert res["trajectory"][-1]["t"] == res["sim_time_s"]
+    assert res["fell"], "a dead calf motor should topple the baseline gait"
+    assert res["sim_time_s"] == pytest.approx(res["fall_time_s"] + FALL_GRACE_S)
+    _report("FL calf dead from 1 s", res)
+
+
+def test_evaluation_confirms_simulator_fall():
+    """The post-fall grace period lets evaluation.py confirm the fall itself."""
+    evaluation = pytest.importorskip("roboevolve.evaluation")
+    pytest.importorskip("roboevolve.faults")
+    fault = {"joint": "front_left_calf", "type": "torque_loss", "strength": 0.0, "start_time_s": 1.0}
+    raw = simulate(DEFAULT_CONTROLLER_PARAMS, fault=fault, duration_s=12.0)
+    m = evaluation.evaluate_simulation_result(raw, evaluation.EvaluationConfig(task_duration_s=12.0))["metrics"]
+    print(f"\nsim fall {raw['fall_time_s']:.3f} s, evaluation fall {m['first_fall_time_s']}")
+    assert raw["fell"] and m["fell"] and m["simulator_fell"]
 
 
 # ---------------------------------------------------------------- Test E

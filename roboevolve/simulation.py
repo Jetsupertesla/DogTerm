@@ -47,6 +47,10 @@ CONTROL_DECIMATION = 1          # controller runs every N physics steps (500 Hz)
 RECORD_EVERY_N_STEPS = 10       # telemetry sampling: 50 Hz
 TRAJECTORY_EVERY_N_STEPS = 25   # lightweight trajectory: 20 Hz
 GROUND_LATERAL_FRICTION = 1.0
+# With stop_on_fall, keep simulating this long after the first detected fall
+# so independent evaluators (evaluation.py requires a sustained 0.25 s posture
+# violation) can confirm it from telemetry.
+FALL_GRACE_S = 0.5
 
 MotorHook = Callable[[list, float], list]
 
@@ -146,6 +150,13 @@ class QuadrupedSim:
         q = np.array([s[0] for s in states])
         qd = np.array([s[1] for s in states])
         tau = np.array([s[3] for s in states])  # applied motor torque, N*m
+        # PyBullet skips the motor constraint when its force cap is 0 but keeps
+        # reporting the last applied torque.  A zero-capacity (dead) motor
+        # applies exactly 0 N*m, so report that.
+        if self.last_commands:
+            cap = {c.name: c.max_torque for c in self.last_commands}
+            dead = np.array([cap[n] == 0.0 for n in rc.MOTOR_NAMES])
+            tau[dead] = 0.0
         return q, qd, tau
 
     def foot_contacts(self) -> np.ndarray:
@@ -247,7 +258,7 @@ def simulate(
       duration_s: trial length in simulated seconds.
       gui: open the PyBullet GUI (camera follows the robot).
       motor_hook: alternative to ``fault``: a hook callable used directly.
-      stop_on_fall: end the trial at the first detected fall.
+      stop_on_fall: end the trial FALL_GRACE_S after the first detected fall.
       realtime: pace to wall-clock time (defaults to ``gui``).
       initial_joint_noise_rad: uniform noise added to the initial joint angles.
 
@@ -302,19 +313,24 @@ def simulate(
             pos, orn, lin, ang = sim.base_state()
             rpy = sim.body_rpy(orn)
 
-            if sim.step_count % RECORD_EVERY_N_STEPS == 0:
-                rec.record(sim, pos, orn, rpy, lin, ang, q, qd, tau)
-            if sim.step_count % TRAJECTORY_EVERY_N_STEPS == 0:
-                rec.trajectory.append({"t": sim.time_s, "x": float(pos[0]),
-                                       "y": float(pos[1]), "z": float(pos[2]),
-                                       "yaw": float(rpy[2])})
-
             if not fell:
                 reason = _detect_fall(sim, pos, rpy)
                 if reason:
                     fell, fall_time, fall_reason = True, sim.time_s, reason
-                    if stop_on_fall:
-                        break
+            stopping = (stop_on_fall and fell
+                        and sim.time_s >= fall_time + FALL_GRACE_S - 1e-9)
+            # Always sample the final step so telemetry ends at sim_time_s
+            # (evaluation.py checks coverage of the whole trial).
+            final = stopping or sim.step_count == n_steps
+
+            if final or sim.step_count % RECORD_EVERY_N_STEPS == 0:
+                rec.record(sim, pos, orn, rpy, lin, ang, q, qd, tau)
+            if final or sim.step_count % TRAJECTORY_EVERY_N_STEPS == 0:
+                rec.trajectory.append({"t": sim.time_s, "x": float(pos[0]),
+                                       "y": float(pos[1]), "z": float(pos[2]),
+                                       "yaw": float(rpy[2])})
+            if stopping:
+                break
 
             if gui:
                 sim.client.resetDebugVisualizerCamera(1.2, 45, -25, pos.tolist())

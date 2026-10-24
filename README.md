@@ -66,9 +66,12 @@ Return dict:
 | `telemetry` | numpy arrays at 50 Hz: `t, base_pos, base_orn, rpy, base_lin_vel, base_ang_vel, joint_pos, joint_vel, cmd_target, cmd_max_torque, applied_torque, foot_contact` (12-wide arrays use `robot_config.MOTOR_NAMES` order) |
 | `lateral_drift_m`, `sim_time_s`, `controller_params`, `seed`, `fault`, `motor_names`, `time_step_s` | metadata |
 
-By default a trial stops at the first fall (`stop_on_fall=True`), so the
-optimiser doesn't waste time simulating a robot lying on the ground. Pass
-`stop_on_fall=False` to run the full duration.
+By default a trial ends 0.5 s after the first detected fall (`stop_on_fall=True`,
+`FALL_GRACE_S`), so the optimiser doesn't waste time simulating a robot lying on the
+ground. The extra 0.5 s gives `evaluation.py` enough telemetry to confirm the
+fall with its own sustained-posture check. `fall_time_s` still reports the
+moment of detection, and telemetry always ends with a sample at `sim_time_s`.
+Pass `stop_on_fall=False` to run the full duration.
 
 ## Controller parameters
 
@@ -103,6 +106,10 @@ These numbers are from runs on the development laptop, with physics settings fix
 - **Standing, 4 s:** no fall, stability RMS 0.001 rad, drift 0.000 m, base height 0.498 m.
 - **Walking, 12 s, defaults:** 4.53 m (0.378 m/s), no fall, stability RMS 0.010 rad, lateral drift −0.03 m, 776 J.
 - **Seeds 0–5 with 0.03 rad initial joint noise:** 4.47–4.53 m, 0/6 falls.
+- **Robustness sweep** (kp ∈ {0.8, 1, 1.5} × kd ∈ {0.7, 1, 1.5} × step 0.03/0.04 m × 1.5/2.0 Hz, 6 noisy seeds each):
+  - Every 0.03 m setting was fall-free; most 0.04 m settings fell on at least one seed.
+  - The defaults are among the most consistent: worst seed 4.47 m, drift ≤ 0.05 m.
+- **Dead front-left calf motor** (`torque_loss`, strength 0) with the baseline gait: falls about 1.3 s after onset. This is what the optimiser has to fix.
 - **Brief's illustrative params** (1.5 Hz, kp 0.5, kd 0.1, 0.05 m): fell at 3.3 s.
 - **Torque cap:** the cap is reached briefly, for example at touchdown, but never exceeded.
 
@@ -140,27 +147,29 @@ Every motor command goes through **`simulation.send_motor_commands(sim, commands
 3. The result is clipped to the hardware limits (torque 0…40 N·m, joint position limits), then sent to PyBullet.
 4. Telemetry records the post-hook values in `cmd_target` and `cmd_max_torque`.
 
-To hook in through `simulate(..., fault=...)`, implement in `roboevolve/faults.py`:
+`faults.py` (Person 2) provides `make_motor_hook(fault, rng)`. `simulate()`
+calls it once per trial with an `rng` seeded from `seed`. Fault format:
 
 ```python
-def make_motor_hook(fault: dict, rng: numpy.random.Generator):
-    """Return hook(commands: list[MotorCommand], t: float) -> list[MotorCommand]."""
-    def hook(commands, t):
-        for c in commands:
-            if c.name == fault["motor"] and t >= fault.get("start_s", 0.0):
-                c.max_torque *= fault.get("strength", 0.0)   # 0 => dead/limp motor
-                # or: c.target_position = locked_angle         # seized joint
-                # or: c.kp *= 0.2                               # weak/sloppy servo
-        return commands
-    return hook
+fault = {"joint": "front_left_calf", "type": "torque_loss",
+         "strength": 0.0, "start_time_s": 2.0}   # strength 0 = dead motor, 1 = healthy
+res = simulate(params, fault=fault)
 ```
 
-`simulate()` calls `faults.make_motor_hook(fault, rng)` once per trial. `rng` is
-seeded from `seed`, so random fault timing stays reproducible. Until
-`faults.py` exists, passing a non-`None` fault raises `NotImplementedError` with
-this contract in the message. For quick experiments you can skip `faults.py`
-and pass a hook directly with `simulate(params, motor_hook=my_hook)`.
+For quick experiments, any `hook(commands, t) -> commands` can be passed with
+`simulate(params, motor_hook=my_hook)`.
 
 Notes for fault design:
 - With `max_torque = 0` the joint swings freely, with no friction or holding torque.
-- Measured `applied_torque` for a disabled motor is exactly 0, which a test checks.
+- PyBullet keeps reporting a zero-force motor's last torque, so `QuadrupedSim.joint_states()` reports 0 N·m for those joints. That keeps `applied_torque` and energy correct, and a test checks it.
+
+## Evaluation / benchmark (Person 2)
+
+`evaluation.evaluate_simulation_result(simulate(...))` and
+`benchmark.run_benchmark(simulate, params, fault)` both work with this module,
+and tests cover them.
+
+Known issue in `benchmark.py`, not fixed here because the file belongs to Person 2:
+- The CLI's `json.dumps` raises `TypeError: Object of type bool is not JSON serializable`.
+- Cause: `evaluation.py` compares NumPy floats, so `success` and `task_completed` come out as `numpy.bool_`.
+- Fix: cast them with `bool(...)` in `evaluation.py`, or pass `default=lambda o: o.item()` to `json.dumps` in `benchmark.py`.
