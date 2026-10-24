@@ -40,7 +40,9 @@ import pybullet_data
 from pybullet_utils import bullet_client
 
 from . import robot_config as rc
-from .controller import GaitController, MotorCommand
+from .controller import GAIT_START_S, GaitController, MotorCommand
+from .grid import (CellNavigator, GridMoveConfig, cell_to_world, parse_moves, plan_cells,
+                   world_to_cell)
 
 TIME_STEP_S = 1.0 / 500.0       # fixed physics step
 CONTROL_DECIMATION = 1          # controller runs every N physics steps (500 Hz)
@@ -383,6 +385,173 @@ def simulate(
         "lateral_drift_m": float(disp[1]),
         "sim_time_s": elapsed,
         "controller_params": params_controller.params,
+        "fault": fault,
+        "seed": seed,
+        "time_step_s": TIME_STEP_S,
+        "motor_names": list(rc.MOTOR_NAMES),
+    }
+
+
+def simulate_moves(
+    controller_params: dict,
+    moves,
+    fault: dict | None = None,
+    seed: int = 0,
+    gui: bool = False,
+    *,
+    grid_config: GridMoveConfig | None = None,
+    motor_hook: MotorHook | None = None,
+    stop_on_fall: bool = True,
+    realtime: bool | None = None,
+    initial_joint_noise_rad: float = 0.0,
+    gui_hold_s: float = 0.0,
+    gui_label: str | None = None,
+) -> dict:
+    """Walk a sequence of grid moves (see grid.py) in one trial.
+
+    ``moves`` is e.g. ``["FORWARD", "RIGHT"]`` or ``"F,R"``.  The robot stands
+    for GAIT_START_S, then :class:`grid.CellNavigator` walks it to each
+    neighbouring cell centre in turn, keeping its heading.  Every command
+    still goes through :func:`send_motor_commands`, so faults apply to every
+    direction.  A move that times out is reported and the next one aims at the
+    next *planned* cell, so the path stays the one asked for; after a fall the
+    remaining moves are reported as not attempted.
+
+    Returns a dict like :func:`simulate` (``trajectory``, ``telemetry``,
+    ``fell``, ``energy_j``, ...) plus:
+      moves            one dict per requested move: index, direction,
+                       start_cell, target_cell, final_cell, final_error_m,
+                       success, time_s (move duration), timed_out, fell,
+                       attempted.
+      planned_cells    the cells the moves should visit, start cell first.
+      final_cell       the cell the base ended in.
+      all_succeeded    every move succeeded.
+    """
+    cfg = grid_config or GridMoveConfig()
+    moves = parse_moves(moves)
+    planned = plan_cells(moves)
+    ctl = GaitController(controller_params)
+    nav = CellNavigator(ctl, cfg)
+    rng = np.random.default_rng(seed)
+    hook = motor_hook if motor_hook is not None else _resolve_fault_hook(fault, rng)
+    realtime = gui if realtime is None else realtime
+    max_steps = int(round((GAIT_START_S + cfg.max_move_s * max(len(moves), 1) + FALL_GRACE_S) / TIME_STEP_S))
+
+    with QuadrupedSim(gui=gui, gui_label=gui_label) as sim:
+        sim.motor_hook = hook
+        if initial_joint_noise_rad > 0:
+            for name, idx in sim.joint_map.items():
+                q0 = rc.STANDING_POSE[name] + rng.uniform(-1, 1) * initial_joint_noise_rad
+                sim.client.resetJointState(sim.robot_id, idx, q0, 0.0)
+
+        pos, orn, lin, ang = sim.base_state()
+        rpy = sim.body_rpy(orn)
+        start_pos = pos.copy()
+        rec = _Recorder()
+        energy = 0.0
+        fell, fall_time, fall_reason = False, None, None
+        results: list[dict] = []
+        current: dict | None = None
+        wall_start = time.perf_counter()
+
+        def finish_move():
+            final_cell = world_to_cell(pos[0], pos[1], cfg.cell_size_m)
+            err = float(np.hypot(*(cell_to_world(*current["target_cell"], cfg.cell_size_m) - pos[:2])))
+            current.update(final_cell=final_cell, final_error_m=err, time_s=sim.time_s - current.pop("_t0"),
+                           timed_out=nav.status == "timeout", fell=fell)
+            current["success"] = (nav.status == "done" and not fell and final_cell == current["target_cell"]
+                                  and err <= cfg.tolerance_m)
+            results.append(current)
+
+        while sim.step_count < max_steps:
+            t = sim.time_s
+            if current is not None and nav.status in ("done", "timeout"):
+                finish_move()
+                current = None
+            if current is None and t >= GAIT_START_S:
+                k = len(results)
+                if k == len(moves):
+                    break
+                start_cell = nav.target_cell
+                target = nav.begin_move(moves[k], t)
+                current = {"index": k, "direction": moves[k].name, "start_cell": start_cell,
+                           "target_cell": target, "attempted": True, "_t0": t}
+
+            targets = nav.update(t, pos, rpy, lin, ang)
+            send_motor_commands(sim, ctl.motor_commands(t, sim.joint_map, targets), t)
+            sim.step()
+
+            q, qd, tau = sim.joint_states()
+            energy += float(np.sum(np.abs(tau * qd))) * TIME_STEP_S
+            pos, orn, lin, ang = sim.base_state()
+            rpy = sim.body_rpy(orn)
+
+            if not fell:
+                reason = _detect_fall(sim, pos, rpy)
+                if reason:
+                    fell, fall_time, fall_reason = True, sim.time_s, reason
+            stopping = stop_on_fall and fell and sim.time_s >= fall_time + FALL_GRACE_S - 1e-9
+            final = stopping or sim.step_count == max_steps
+
+            if final or sim.step_count % RECORD_EVERY_N_STEPS == 0:
+                rec.record(sim, pos, orn, rpy, lin, ang, q, qd, tau)
+            if final or sim.step_count % TRAJECTORY_EVERY_N_STEPS == 0:
+                rec.trajectory.append({"t": sim.time_s, "x": float(pos[0]), "y": float(pos[1]),
+                                       "z": float(pos[2]), "yaw": float(rpy[2])})
+            if stopping:
+                break
+
+            if gui:
+                sim.scene.update(sim.time_s, pos, lin, fell)
+            if realtime:
+                lag = sim.time_s - (time.perf_counter() - wall_start)
+                if lag > 0:
+                    time.sleep(lag)
+        else:
+            # max_steps reached: the navigator's own timeout should fire first
+            if current is not None:
+                nav.status = "timeout"
+
+        if current is not None:
+            finish_move()
+        for k in range(len(results), len(moves)):
+            prev = results[-1]["target_cell"] if results else planned[0]
+            results.append({"index": k, "direction": moves[k].name, "start_cell": prev,
+                            "target_cell": planned[k + 1], "final_cell": None, "final_error_m": None,
+                            "success": False, "time_s": 0.0, "timed_out": False, "fell": fell,
+                            "attempted": False})
+        if rec.trajectory and rec.trajectory[-1]["t"] != sim.time_s:
+            rec.record(sim, pos, orn, rpy, lin, ang, q, qd, tau)
+            rec.trajectory.append({"t": sim.time_s, "x": float(pos[0]), "y": float(pos[1]),
+                                   "z": float(pos[2]), "yaw": float(rpy[2])})
+        elapsed = sim.time_s
+        end_cell = world_to_cell(pos[0], pos[1], cfg.cell_size_m)
+        ok = sum(r["success"] for r in results)
+        if gui:
+            sim.scene.finish(f"{'FELL - ' if fell else ''}{ok}/{len(moves)} moves on target, "
+                             f"ended in cell {end_cell}")
+            time.sleep(max(gui_hold_s, 0.0))
+
+    telemetry = rec.as_arrays()
+    roll_pitch = telemetry["rpy"][:, :2] if len(telemetry["t"]) else np.zeros((0, 2))
+    stability = float(np.sqrt(np.mean(np.sum(roll_pitch ** 2, axis=1)))) if len(roll_pitch) else float("nan")
+    disp = pos - start_pos
+    return {
+        "moves": results,
+        "planned_cells": planned,
+        "final_cell": end_cell,
+        "all_succeeded": ok == len(moves),
+        "fell": fell,
+        "fall_time_s": fall_time,
+        "fall_reason": fall_reason,
+        "stability_rms_rad": stability,
+        "energy_j": energy,
+        "displacement_m": [float(disp[0]), float(disp[1])],
+        "trajectory": rec.trajectory,
+        "telemetry": telemetry,
+        "sim_time_s": elapsed,
+        "controller_params": ctl.params,
+        "grid_config": cfg,
         "fault": fault,
         "seed": seed,
         "time_step_s": TIME_STEP_S,

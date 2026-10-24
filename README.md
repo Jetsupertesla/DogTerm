@@ -11,7 +11,9 @@ roboevolve/
 ├── robot_config.py    # joint map, standing pose, limits, torque cap
 ├── scene.py           # GUI-only science-lab scene + quest overlay (visual only)
 ├── demo_walk.py       # GUI / headless demo
-└── tests/test_simulation.py
+├── grid.py            # grid cells, Direction, GridMoveConfig, CellNavigator (closed loop)
+├── demo_grid.py       # headless grid-move demo (per-move table)
+└── tests/test_simulation.py, tests/test_grid.py
 ```
 
 ## Setup
@@ -97,6 +99,63 @@ ground. The extra 0.5 s gives `evaluation.py` enough telemetry to confirm the
 fall with its own sustained-posture check. `fall_time_s` still reports the
 moment of detection, and telemetry always ends with a sample at `sim_time_s`.
 Pass `stop_on_fall=False` to run the full duration.
+
+## Grid moves (forward / back / left / right between cells)
+
+```bash
+python -m roboevolve.demo_grid                        # F,F,R,B,L, prints one row per move
+python -m roboevolve.demo_grid --moves F,L,B,R --noise 0.03 --seed 4
+python -m roboevolve.demo_grid --moves R,R --fault-joint front_left_calf --fault-strength 0.3
+python -m pytest roboevolve/tests/test_grid.py -s
+```
+
+```python
+from roboevolve.simulation import simulate_moves
+res = simulate_moves(DEFAULT_CONTROLLER_PARAMS, ["FORWARD", "RIGHT", "BACK"], seed=0)
+res["moves"][1]   # {direction, start_cell, target_cell, final_cell, final_error_m, success, time_s, timed_out, fell, attempted}
+res["final_cell"], res["all_succeeded"], res["trajectory"], res["telemetry"]   # same formats as simulate()
+```
+
+**How it works:**
+- **Grid:** `grid.py` holds the grid. Cells are `CELL_SIZE_M` = 0.5 m squares, and cell `(i, j)` is centred at `(i·0.5, j·0.5)`, so cell (0, 0) is the spawn point.
+  - FORWARD/BACK are ±x and LEFT/RIGHT are ±y.
+  - The robot keeps its heading: BACK walks backward and LEFT/RIGHT side-step. Nothing turns.
+- **Steered gait:** `GaitController.steered_joint_targets` gives each foot a stance stroke in any body-frame direction.
+  - `leg_ik_3d` adds the hip ab/adduction joint, solving the frontal plane before the existing sagittal IK.
+  - The leg sits 3.5 cm (left) or 3.3 cm (right) outboard of the abduction axis.
+- **Closed loop:** `CellNavigator` reads base position, yaw and tilt every control step. It:
+  - points the strokes at the target cell centre, and slows down inside 0.2 m;
+  - steers yaw back to the spawn heading with a differential stroke;
+  - levels the body: each foot's height shifts by `roll·y_hip − pitch·x_hip`, plus a rate term;
+  - ramps down to the standing pose within 3 cm of the target, then judges the error after 0.5 s standing.
+- **Failures are reported, not hidden:** a move fails if the robot falls, times out (12 s), or settles outside 5 cm of the centre.
+  - After a timeout, the next move still aims at the next *planned* cell.
+  - After a fall, the remaining moves are marked `attempted: False`.
+- **Faults:** every command still goes through `send_motor_commands`, so faults apply in every direction.
+- **Separate settings:** grid-only settings live in `grid.GridMoveConfig`, not in `PARAM_BOUNDS`. The optimiser searches every `PARAM_BOUNDS` key, and a lateral stride would be a dead dimension for its forward-walking objective.
+- **No change to forward walking:** `simulate()`, `joint_targets()` and the optimiser are untouched.
+  - The 12 s default walk is bit-identical to `main` on the same machine (4.513930251135049 m and 768.49 J on macOS / Python 3.9).
+  - The README's 4.53 m figure came from a different machine and PyBullet build.
+
+**Measured** (default params, 20 seeds with 0.03 rad initial joint noise, one move from cell (0, 0)):
+
+| move | success | falls | error mean / max | time mean / max |
+|---|---|---|---|---|
+| FORWARD | 20/20 | 0 | 0.9 / 2.7 cm | 2.9 / 4.5 s |
+| BACK | 20/20 | 0 | 1.4 / 4.0 cm | 3.0 / 3.7 s |
+| LEFT | 20/20 | 0 | 2.0 / 3.6 cm | 3.5 / 4.0 s |
+| RIGHT | 20/20 | 0 | 2.0 / 2.9 cm | 3.4 / 3.9 s |
+
+**Paths, sweeps and faults:**
+- **8-move path:** `F,F,L,L,B,B,R,R` returned home on 20/20 seeds, with a mean error of 1.6 cm per move and 26 s in total.
+- **Side-stepping is the weak direction:**
+  - **Without levelling:** a roll sway of about 0.5 Hz builds up while side-stepping, reverses the sideways motion and tips the robot.
+    - It fell on 1 of 20 `F,L` runs even at `lateral_stride_scale` 0.3.
+    - At 0.7 it fell on 4 of 12 single moves.
+  - **With levelling:** the 8-move path passes 20/20 up to 1.0 and tips 2 of 20 at 1.2. The default of 0.8 keeps a margin.
+- **Injured robot:**
+  - A dead front-left calf falls about 2.3 s into the first move. The run reports FELL, and the remaining moves are not attempted.
+  - At 30% calf strength, `F,L,B,R` still returns home (4/4 moves, 18 s).
 
 ## Controller parameters
 
