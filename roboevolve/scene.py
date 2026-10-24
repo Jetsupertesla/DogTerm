@@ -264,6 +264,19 @@ class GuiScene:
         return "nominal"
 
     def _animate_props(self, t, pos, weak):
+        self._animate_lab(t)
+        state = self._trial_state(weak)
+        self._set_status_screen(state)
+        self._animate_beacon(t, state)
+        self._move_spotlight(t, pos, state)
+
+    def _set_status_screen(self, state):
+        if state != self.status_state:
+            self.p.changeVisualShape(self.props.status_screen, -1, textureUniqueId=self.status_tex[state])
+            self.status_state = state
+
+    def _animate_lab(self, t):
+        """Robot arms, wall clock and rack LEDs."""
         p, props = self.p, self.props
         for k, (arm, joints) in enumerate(props.arms):
             for j, jid in enumerate(joints):
@@ -281,13 +294,6 @@ class GuiScene:
         for led in self.led_rng.choice(props.leds, size=min(LED_BLINKS_PER_FRAME, len(props.leds)), replace=False):
             rgb = (GREEN, GREEN, CYAN, AMBER, (0.05, 0.25, 0.1))[int(self.led_rng.integers(5))]
             p.changeVisualShape(int(led), -1, rgbaColor=[*rgb, 1])
-
-        state = self._trial_state(weak)
-        if state != self.status_state:
-            p.changeVisualShape(props.status_screen, -1, textureUniqueId=self.status_tex[state])
-            self.status_state = state
-        self._animate_beacon(t, state)
-        self._move_spotlight(t, pos, state)
 
     def _animate_beacon(self, t, state):
         """Start-totem beacon: steady cyan/green when fine, flashing red on a fault."""
@@ -347,6 +353,8 @@ class GuiScene:
         up = np.array(cam[7]) / np.linalg.norm(cam[7])
         eye = np.array(cam[11]) - fwd * cam[10]
         proj = cam[3]  # column-major 4x4: [0] = 1/(aspect*tan(fov/2)), [5] = 1/tan(fov/2)
+        if not proj[0] or not proj[5]:
+            return None  # the window has not rendered a frame yet
         return eye, fwd, right, up, 1.0 / proj[0], 1.0 / proj[5]
 
     def _screen_point(self, sx, sy, depth=OVERLAY_DEPTH):
@@ -382,18 +390,25 @@ class GuiScene:
 
     def _draw_overlay(self, t, pos, lin_vel, fell, weak):
         """Event banners, pinned top-centre of the screen."""
-        self._frame = self._camera_frame()
+        frame = self._camera_frame()
+        if frame is None:
+            return
+        self._frame = frame
         self._place_overlay()
         if t - self.last_hud_t >= self.HUD_EVERY_S or fell:
             self.last_hud_t = t
             self.live = (float(pos[0] - self.start_pos[0]), float(lin_vel[0]))
 
+        self._render_banners()
+
+    def _render_banners(self, max_lines: int = 3):
+        """Draw self.banner (list of (text, rgb, size)) top-centre; clear unused lines."""
         shown = set()
         for k, (txt, rgb, size) in enumerate(self.banner):
             local = self._panel_local(max(-0.25, 0.08 - 0.0095 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
             self._text(f"banner{k}", txt, local, rgb, size, parent=self.panel_id)
             shown.add(f"banner{k}")
-        for k in range(3):  # clear banners that are no longer shown
+        for k in range(max_lines):
             key = f"banner{k}"
             if key not in shown and self.text_sig.get(key, ("",))[0] != "":
                 self._text(key, "", [0, 0, 0], WHITE, 1.0, parent=self.panel_id)

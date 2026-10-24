@@ -1,6 +1,7 @@
-"""Field-trial demo: healthy walk, injured walk, then the optimiser-adapted gait.
+"""Field-trial demo: healthy walk, injured walk and the adapted gait, side by side.
 
-    python -m roboevolve.demo_walk                      # GUI: healthy 12 s, injured 20 s, adapted 20 s
+    python -m roboevolve.demo_walk                      # GUI: all three dogs at once on parallel lanes (20 s)
+    python -m roboevolve.demo_walk --sequential         # the three stages one after another (12 s / 20 s / 20 s)
     python -m roboevolve.demo_walk --headless           # same stages, metrics only
     python -m roboevolve.demo_walk --only adapted       # just one stage
     python -m roboevolve.demo_walk --no-adapted         # stages 1-2 only
@@ -21,7 +22,7 @@ import json
 from pathlib import Path
 
 from .controller import DEFAULT_CONTROLLER_PARAMS
-from .simulation import simulate
+from .simulation import simulate, simulate_parallel
 
 SUMMARY_KEYS = ("distance_m", "avg_speed_m_s", "fell", "fall_time_s", "fall_reason",
                 "stability_rms_rad", "energy_j", "lateral_drift_m", "sim_time_s")
@@ -43,6 +44,9 @@ def load_adapted_gait(path: Path, fault: dict) -> tuple[dict | None, str]:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--headless", action="store_true", help="run without the GUI")
+    ap.add_argument("--sequential", action="store_true",
+                    help="run the stages one after another (default: all side by side on parallel lanes)")
+    ap.add_argument("--duration", type=float, default=20.0, help="side-by-side mode: trial length for every lane")
     ap.add_argument("--only", choices=("healthy", "injured", "adapted"), help="run a single stage")
     ap.add_argument("--no-adapted", action="store_true", help="skip stage 3 (adapted gait)")
     ap.add_argument("--adapted-gait", type=Path, default=ADAPTED_GAIT_PATH)
@@ -104,6 +108,17 @@ def main(argv=None):
     }
 
     results = {}
+    if not args.sequential:
+        # All stages at once: one lane per stage, each in its own physics world
+        # (identical to running it alone), shown side by side in one window.
+        runs = [{"controller_params": st["params"], "fault": st["fault"], "seed": args.seed, "name": st["name"],
+                 "rgb": st["rgb"], "adapted": st.get("adapted", False)} for st in sets]
+        print(f"\n=== SIDE BY SIDE: {', '.join(st['name'] for st in sets)}  ({args.duration:.0f} s) ===", flush=True)
+        for st, res in zip(sets, simulate_parallel(runs, args.duration, gui=not args.headless,
+                                                   gui_hold_s=args.hold, gui_title=quest["title"])):
+            results[st["name"]] = res
+            print(f"{st['name']}: " + json.dumps({k: res[k] for k in SUMMARY_KEYS}), flush=True)
+        sets = []
     for i, st in enumerate(sets):
         print(f"\n=== STAGE {i + 1}: {st['stage_name']}  ({st['duration_s']:.0f} s) ===", flush=True)
         quest["stage"] = i

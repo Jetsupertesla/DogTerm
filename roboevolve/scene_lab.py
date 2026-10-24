@@ -291,12 +291,16 @@ class LabBuilder:
                 self.props.leds.append(led)
 
     def _build_track(self):
+        self.add_lane(0.0)
+
+    def add_lane(self, y: float):
+        """A test lane (grip surface, metre ticks, start line) centred on y."""
         L, hw, x0 = TRACK_LENGTH_M, TRACK_HALF_WIDTH_M, TRACK_START_X
-        self.quad([x0 + L / 2, 0, 0.002], L, 2 * hw, tx.lane_texture(), euler=(-math.pi / 2, 0, 0),
+        self.quad([x0 + L / 2, y, 0.002], L, 2 * hw, tx.lane_texture(), euler=(-math.pi / 2, 0, 0),
                   uv=(0, 0, L, 1), specular=0.3)
-        ticks = [[m, 0, 0.0032] for m in range(1, int(L + x0) + 1)]
+        ticks = [[m, y, 0.0032] for m in range(1, int(L + x0) + 1)]
         self.batch(self.vis("box", (0.008, hw - 0.09, 0.001), [*INK, 1]), ticks)
-        self.box([0, 0, 0.0034], [0.03, hw - 0.085, 0.0012], GREEN, specular=NO_SHINE)   # start line
+        self.box([0, y, 0.0034], [0.03, hw - 0.085, 0.0012], GREEN, specular=NO_SHINE)   # start line
 
     def _build_lane_barrier(self):
         """Posts with belts and distance plates along the lane's far side."""

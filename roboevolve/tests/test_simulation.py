@@ -296,3 +296,19 @@ def test_stop_when_still_ends_after_robot_settles():
     # identical physics up to the stop: the shorter run is a prefix of the full one
     n = len(tel["t"]) - 1
     np.testing.assert_array_equal(tel["base_pos"][:n], full["telemetry"]["base_pos"][:n])
+
+
+# ------------------------------------------- side-by-side runs (demo default)
+def test_simulate_parallel_matches_solo_runs():
+    """Each lane runs in its own world, so results are identical to simulate()."""
+    from roboevolve.simulation import simulate_parallel
+    pytest.importorskip("roboevolve.faults")
+    fault = {"joint": "front_left_calf", "type": "torque_loss", "strength": 0.0, "start_time_s": 0.0}
+    runs = [{"controller_params": {}}, {"controller_params": {}, "fault": fault},
+            {"controller_params": {}, "seed": 4, "initial_joint_noise_rad": 0.02}]
+    par = simulate_parallel(runs, duration_s=3.0)
+    for run, r in zip(runs, par):
+        solo = simulate(run["controller_params"], fault=run.get("fault"), seed=run.get("seed", 0), duration_s=3.0,
+                        stop_on_fall=False, initial_joint_noise_rad=run.get("initial_joint_noise_rad", 0.0))
+        assert r["distance_m"] == solo["distance_m"] and r["fell"] == solo["fell"]
+        np.testing.assert_array_equal(r["telemetry"]["joint_pos"], solo["telemetry"]["joint_pos"])

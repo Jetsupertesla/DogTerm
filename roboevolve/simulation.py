@@ -68,7 +68,7 @@ class QuadrupedSim:
     """
 
     def __init__(self, gui: bool = False, gui_label: str | None = None, gui_label_rgb=None,
-                 gui_quest: dict | None = None):
+                 gui_quest: dict | None = None, build_scene: bool = True):
         self.gui = gui
         if gui:
             from .scene import window_options
@@ -85,9 +85,21 @@ class QuadrupedSim:
 
         self.plane_id = p.loadURDF("plane.urdf")
         p.changeDynamics(self.plane_id, -1, lateralFriction=GROUND_LATERAL_FRICTION)
+        self._load_robot(0.0)
+        self.step_count = 0
+
+        # Visual-only arena/HUD; never built for headless runs.
+        self.scene = None
+        if gui and build_scene:
+            from .scene import CYAN, GuiScene
+            self.scene = GuiScene(self, gui_label, gui_label_rgb or CYAN, gui_quest)
+
+    def _load_robot(self, y: float):
+        """Load one Laikago at (0, y) in the standing pose."""
+        p = self.client
         self.robot_id = p.loadURDF(
             rc.URDF_PATH,
-            [0.0, 0.0, rc.BASE_START_HEIGHT_M],
+            [0.0, y, rc.BASE_START_HEIGHT_M],
             rc.BASE_START_ORN,
             flags=p.URDF_USE_SELF_COLLISION,
             useFixedBase=False,
@@ -107,13 +119,6 @@ class QuadrupedSim:
 
         self.motor_hook: MotorHook | None = None
         self.last_commands: list[MotorCommand] = []
-        self.step_count = 0
-
-        # Visual-only arena/HUD; never built for headless runs.
-        self.scene = None
-        if gui:
-            from .scene import CYAN, GuiScene
-            self.scene = GuiScene(self, gui_label, gui_label_rgb or CYAN, gui_quest)
 
     # -- lifecycle ---------------------------------------------------------
     def close(self):
@@ -181,6 +186,37 @@ class QuadrupedSim:
         return len(self.client.getContactPoints(self.robot_id, self.plane_id, -1, -1)) > 0
 
 
+class LaneRobot(QuadrupedSim):
+    """An extra robot in an existing QuadrupedSim world, on a parallel lane at y.
+
+    Shares the world's client and ground; has its own joint map, motor hook and
+    commands, so ``send_motor_commands`` and the state/contact helpers work on it
+    unchanged.  The world steps the physics; closing is the world's job.
+    """
+
+    def __init__(self, world: QuadrupedSim, y: float):
+        self.world = world
+        self.gui = world.gui
+        self.client = world.client
+        self.plane_id = world.plane_id
+        self.scene = None
+        self._load_robot(y)
+
+    @property
+    def time_s(self) -> float:
+        return self.world.time_s
+
+    @property
+    def step_count(self) -> int:
+        return self.world.step_count
+
+    def step(self):
+        raise RuntimeError("step the world, not a lane robot")
+
+    def close(self):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # THE central motor-command function
 # ---------------------------------------------------------------------------
@@ -206,10 +242,10 @@ def send_motor_commands(sim: QuadrupedSim, commands: list[MotorCommand], t: floa
         applied.append(MotorCommand(
             name=c.name,
             joint_index=c.joint_index,
-            target_position=float(np.clip(c.target_position, lo, hi)),
+            target_position=float(min(max(c.target_position, lo), hi)),
             kp=float(max(c.kp, 0.0)),
             kd=float(max(c.kd, 0.0)),
-            max_torque=float(np.clip(c.max_torque, 0.0, rc.MAX_TORQUE_NM)),
+            max_torque=float(min(max(c.max_torque, 0.0), rc.MAX_TORQUE_NM)),
             target_velocity=float(c.target_velocity),
         ))
 
@@ -374,6 +410,12 @@ def simulate(
             sim.scene.finish(f"{'FELL' if fell else 'FINISHED'}  {d:.2f} m in {elapsed:.1f} s")
             time.sleep(max(gui_hold_s, 0.0))
 
+    return _result(rec, start_pos, end_pos, elapsed, energy, fell, fall_time, fall_reason,
+                   params_controller.params, fault, seed)
+
+
+def _result(rec, start_pos, end_pos, elapsed, energy, fell, fall_time, fall_reason, params, fault, seed) -> dict:
+    """The result dict returned by simulate() / simulate_parallel() for one robot."""
     telemetry = rec.as_arrays()
     roll_pitch = telemetry["rpy"][:, :2] if len(telemetry["t"]) else np.zeros((0, 2))
     stability = float(np.sqrt(np.mean(np.sum(roll_pitch ** 2, axis=1)))) if len(roll_pitch) else float("nan")
@@ -394,12 +436,182 @@ def simulate(
         "telemetry": telemetry,
         "lateral_drift_m": float(disp[1]),
         "sim_time_s": elapsed,
-        "controller_params": params_controller.params,
+        "controller_params": params,
         "fault": fault,
         "seed": seed,
         "time_step_s": TIME_STEP_S,
         "motor_names": list(rc.MOTOR_NAMES),
     }
+
+
+class _LaneRunner:
+    """One robot in its own physics world, stepped exactly like simulate() steps it."""
+
+    def __init__(self, run: dict):
+        self.run = run
+        self.sim = QuadrupedSim(gui=False)
+        rng = np.random.default_rng(run.get("seed", 0))
+        self.ctrl = GaitController(run.get("controller_params"))
+        self.sim.motor_hook = _resolve_fault_hook(run.get("fault"), rng)
+        noise = run.get("initial_joint_noise_rad", 0.0)
+        if noise > 0:
+            for name, idx in self.sim.joint_map.items():
+                self.sim.client.resetJointState(self.sim.robot_id, idx,
+                                                rc.STANDING_POSE[name] + rng.uniform(-1, 1) * noise, 0.0)
+        self.rec, self.energy = _Recorder(), 0.0
+        self.fell, self.fall_time, self.fall_reason = False, None, None
+        self.start = self.sim.base_state()[0]
+        self.pos, self.lin = self.start, np.zeros(3)
+
+    def step(self, final: bool):
+        sim = self.sim
+        t = sim.time_s
+        send_motor_commands(sim, self.ctrl.motor_commands(t, sim.joint_map), t)
+        sim.step()
+        q, qd, tau = sim.joint_states()
+        self.energy += float(np.sum(np.abs(tau * qd))) * TIME_STEP_S
+        pos, orn, lin, ang = sim.base_state()
+        rpy = sim.body_rpy(orn)
+        self.pos, self.lin = pos, lin
+        if not self.fell:
+            reason = _detect_fall(sim, pos, rpy)
+            if reason:
+                self.fell, self.fall_time, self.fall_reason = True, sim.time_s, reason
+        if final or sim.step_count % RECORD_EVERY_N_STEPS == 0:
+            self.rec.record(sim, pos, orn, rpy, lin, ang, q, qd, tau)
+        if final or sim.step_count % TRAJECTORY_EVERY_N_STEPS == 0:
+            self.rec.trajectory.append({"t": sim.time_s, "x": float(pos[0]), "y": float(pos[1]),
+                                        "z": float(pos[2]), "yaw": float(rpy[2])})
+
+    def frame(self) -> dict:
+        """Small snapshot for the display: pose, joints, status, motor capacities."""
+        p, sim = self.sim.client, self.sim
+        _, orn = p.getBasePositionAndOrientation(sim.robot_id)
+        return {"pos": np.asarray(self.pos), "orn": orn, "lin": np.asarray(self.lin),
+                "q": [s[0] for s in p.getJointStates(sim.robot_id, sim.motor_indices)],
+                "fell": self.fell, "motors": [(c.name, c.joint_index, c.max_torque) for c in sim.last_commands]}
+
+    def result(self) -> dict:
+        r = _result(self.rec, self.start, self.sim.base_state()[0], self.sim.time_s, self.energy, self.fell,
+                    self.fall_time, self.fall_reason, self.ctrl.params, self.run.get("fault"), self.run.get("seed", 0))
+        self.sim.close()
+        return r
+
+
+def _lane_worker(run: dict, n_steps: int, frame_every: int, conn):
+    """Process entry point: simulate one lane, stream display frames, then send the result."""
+    lane = _LaneRunner(run)
+    conn.send(lane.frame())
+    for step in range(1, n_steps + 1):
+        lane.step(final=step == n_steps)
+        if step % frame_every == 0 or step == n_steps:
+            conn.send(lane.frame())
+    conn.send(("result", lane.result()))
+    conn.close()
+
+
+def simulate_parallel(
+    runs: list[dict],
+    duration_s: float = 20.0,
+    gui: bool = False,
+    *,
+    lane_spacing_m: float = 1.4,
+    realtime: bool | None = None,
+    gui_hold_s: float = 0.0,
+    gui_title: str | None = None,
+) -> list[dict]:
+    """Run several robots side by side.
+
+    ``runs``: one dict per robot with ``controller_params`` and optionally
+    ``fault``, ``seed``, ``initial_joint_noise_rad`` and, for the GUI, ``name``,
+    ``rgb`` and ``adapted``.  Every robot runs the full ``duration_s`` (falls are
+    detected and reported, nothing stops early).
+
+    Each robot is simulated in its *own* physics world, exactly as ``simulate()``
+    would run it, so results are identical to solo runs.  (Putting several
+    robots in one world shifts all but one of them sideways, and the different
+    floating-point rounding grows into a visibly different walk.)
+
+    Headless, the lanes are stepped in lockstep in this process.  With
+    ``gui=True`` each lane runs in a worker process and streams poses at the
+    display rate; a separate, never-stepped display world mirrors them side by
+    side on parallel lanes (robot k at y = -k * lane_spacing_m).
+
+    Returns one simulate()-style result dict per run, in order.
+    """
+    n_steps = int(round(duration_s / TIME_STEP_S))
+    if not gui:
+        lanes = [_LaneRunner(run) for run in runs]
+        for step in range(1, n_steps + 1):
+            for lane in lanes:
+                lane.step(final=step == n_steps)
+        return [lane.result() for lane in lanes]
+
+    import multiprocessing as mp
+    from .scene_parallel import ParallelScene
+    realtime = True if realtime is None else realtime
+    frame_every = int(round(ParallelScene.FRAME_EVERY_S / TIME_STEP_S))
+    ctx = mp.get_context("spawn")
+    workers, display = [], None
+    try:
+        for run in runs:
+            parent, child = ctx.Pipe(duplex=False)
+            proc = ctx.Process(target=_lane_worker, args=(run, n_steps, frame_every, child), daemon=True)
+            proc.start()
+            child.close()
+            workers.append((proc, parent))
+
+        display = QuadrupedSim(gui=True, build_scene=False)  # never stepped: visual mirror only
+        shown = [display] + [LaneRobot(display, -k * lane_spacing_m) for k in range(1, len(runs))]
+        lanes = []
+        for k, (run, robot, (_, conn)) in enumerate(zip(runs, shown, workers)):
+            ln = {"run": run, "display": robot, "lane_y": -k * lane_spacing_m, "conn": conn}
+            _apply_frame(ln, conn.recv())
+            ln["start"] = ln["pos"].copy()
+            lanes.append(ln)
+        display.scene = ParallelScene(display, lanes, title=gui_title)
+
+        n_frames = -(-n_steps // frame_every)
+        wall_start = time.perf_counter()
+        for f in range(1, n_frames + 1):
+            for ln in lanes:
+                _apply_frame(ln, ln["conn"].recv())
+            t_now = min(f * frame_every, n_steps) * TIME_STEP_S
+            display.step_count = int(round(t_now / TIME_STEP_S))
+            display.scene.update(t_now)
+            if realtime:
+                lag = t_now - (time.perf_counter() - wall_start)
+                if lag > 0:
+                    time.sleep(lag)
+
+        results = []
+        for ln in lanes:
+            tag, res = ln["conn"].recv()
+            results.append(res)
+        display.scene.finish(results)
+        time.sleep(max(gui_hold_s, 0.0))
+        return results
+    finally:
+        for proc, conn in workers:
+            conn.close()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.terminate()
+        if display is not None:
+            display.close()
+
+
+def _apply_frame(ln: dict, frame: dict):
+    """Mirror a worker's snapshot onto the lane's display robot (shifted onto its lane)."""
+    robot = ln["display"]
+    pos = frame["pos"]
+    robot.client.resetBasePositionAndOrientation(robot.robot_id, [pos[0], pos[1] + ln["lane_y"], pos[2]],
+                                                 frame["orn"])
+    for idx, q in zip(robot.motor_indices, frame["q"]):
+        robot.client.resetJointState(robot.robot_id, idx, q, 0.0)
+    ln["pos"], ln["lin"], ln["fell"] = pos, frame["lin"], frame["fell"]
+    robot.last_commands = [MotorCommand(name=n, joint_index=i, target_position=0.0, kp=0.0, kd=0.0, max_torque=m)
+                           for n, i, m in frame["motors"]]
 
 
 def _detect_fall(sim: QuadrupedSim, pos, rpy) -> str | None:

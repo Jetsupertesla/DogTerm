@@ -30,7 +30,8 @@ uses a prebuilt wheel or compiles from source with the Xcode command-line tools.
 ## Run
 
 ```bash
-python -m roboevolve.demo_walk                 # GUI: stage 1 healthy (12 s), 2 injured (20 s), 3 adapted (20 s)
+python -m roboevolve.demo_walk                 # GUI: healthy, injured and adapted dogs side by side (20 s)
+python -m roboevolve.demo_walk --sequential    # the three stages one after another (12 s / 20 s / 20 s)
 python -m roboevolve.demo_walk --headless      # same two sets, metrics + before/after table
 python -m roboevolve.demo_walk --only healthy  # a single set
 python -m roboevolve.demo_walk --fault-joint front_left_calf --fault-strength 0.3   # milder injury
@@ -73,6 +74,23 @@ Demo sets:
   - Gaits from `demo_rsi` were tuned on 8 s trials and fell in 20 s demo conditions.
   - Stage 3 is skipped, with a message, if the gait file is missing or was made for a different injury.
   - Banners compare speeds (distance / time), not raw distances, because the stages have different lengths.
+
+## Side by side (`simulate_parallel`)
+
+The demo's default runs all three stages at once, on parallel lanes in one window:
+
+```python
+from roboevolve.simulation import simulate_parallel
+results = simulate_parallel([{"controller_params": {}, "name": "healthy"},
+                             {"controller_params": {}, "fault": fault, "name": "injured"}],
+                            duration_s=20.0, gui=True)
+```
+
+How it works:
+- **Separate worlds:** each robot is simulated in its own physics world, exactly as `simulate()` runs it, so results are bit-identical to solo runs (a test checks this).
+- **Why not one world:** putting the robots in one shared world shifts all but one sideways, and the different floating-point rounding grows into visibly different walks. The adapted lane, for example, gave 3.32 m instead of 3.46 m.
+- **GUI:** each lane runs in a worker process and streams poses to a display world that mirrors them side by side, in real time. The scene (`scene_parallel.py`) adds lane labels, live distance tags, per-dog spotlights and trails, and a final verdict comparing the lanes.
+- **Headless:** the lanes are stepped in lockstep in one process.
 
 ## Headless API
 
