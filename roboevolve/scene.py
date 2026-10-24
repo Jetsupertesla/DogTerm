@@ -9,11 +9,10 @@ Everything here is purely visual and only built when ``gui=True``:
 GUI and headless runs therefore produce identical physics results.
 
 Quest layer: one two-stage quest across the demo's sets (healthy walk, then
-the same walk with a motor disabled).  A quest log pinned to the screen shows
-both stages with live/final results and a segmented progress bar; banners
-announce the motor failure, the robot going down, and the final verdict.  A
-spotlight under the robot turns red once a motor is faulted.  The overlay only
-*reads* robot state.
+the same walk with a motor disabled).  Banners announce each stage's result,
+the motor failure, the robot going down, and the final verdict.  A spotlight
+under the robot turns red once a motor is faulted.  The overlay only *reads*
+robot state.
 """
 
 from __future__ import annotations
@@ -38,15 +37,10 @@ HAZARD = (1.0, 0.80, 0.08)
 BLACK = (0.08, 0.08, 0.09)
 CYAN = (0.0, 0.75, 0.95)
 GREEN = (0.15, 0.85, 0.35)
-AMBER = (1.0, 0.65, 0.05)
 GOLD = (1.0, 0.78, 0.12)
 WHITE = (1.0, 1.0, 1.0)
 INK = (0.10, 0.14, 0.22)
 FAULT_RED = (0.95, 0.10, 0.10)
-PANEL = (0.04, 0.06, 0.12)
-PENDING = (0.78, 0.83, 0.90)
-DIM = (0.50, 0.55, 0.62)
-BAR_EMPTY = (0.22, 0.26, 0.33)
 OVERLAY_DEPTH = 0.5  # metres in front of the camera for screen-pinned UI
 
 TRACK_START_X = -1.0
@@ -189,8 +183,6 @@ class GuiScene:
         self.event_banner = None
         self.banner: list = []
         self.live = (0.0, 0.0)
-        self.bar_rgb = None
-        self.bar_y = 0.0
         self.panel_id = None
         self._frame = None
 
@@ -525,11 +517,9 @@ class GuiScene:
         return (eye + fwd * depth + right * (sx * tan_h * depth) + up * (sy * tan_v * depth)).tolist()
 
     # Screen layout (normalised coords, -1..1)
-    PANEL_RECT = (-0.985, 0.975, -0.30, 0.31)  # x0, y0 (top), x1, y1 (bottom)
-    LINE_STEP = 0.075
+    PANEL_RECT = (-0.1, 0.1, 0.1, -0.1)  # invisible anchor rect (x0, y0, x1, y1)
     BANNER_Y = 0.62
     BANNER_STEP = 0.14
-    BAR_SEGMENTS = 24
 
     def _panel_local(self, sx, sy, z=0.015):
         """Panel-frame position of screen point (sx, sy); overlay text hangs off the panel."""
@@ -539,86 +529,26 @@ class GuiScene:
         return [(sx - (x0 + x1) / 2) * tan_h * d, (sy - (y0 + y1) / 2) * tan_v * d, z]
 
     def _place_overlay(self):
-        """Pin the panel (and its parented text) plus accent/progress bodies to the screen."""
+        """Pin the invisible overlay anchor (banner text is parented to it) to the screen."""
         eye, fwd, right, up, tan_h, tan_v = self._frame
         quat = _quat_from_matrix(np.column_stack([right, up, -fwd]))
         x0, y0, x1, y1 = self.PANEL_RECT
         d = OVERLAY_DEPTH + 0.02
-        center = np.array(self._screen_point((x0 + x1) / 2, (y0 + y1) / 2, d))
-        p = self.p
+        center = self._screen_point((x0 + x1) / 2, (y0 + y1) / 2, d)
         if self.panel_id is None:
-            half = (abs(x1 - x0) * tan_h * d / 2, abs(y1 - y0) * tan_v * d / 2, 0.0005)
-            self.panel_id = self._body(self._vis("box", half, [*PANEL, 0.78], (0, 0, 0)), center.tolist(), quat)
-            accent_half = (0.006 * tan_h * d, half[1], 0.0006)
-            self.accent_id = self._body(self._vis("box", accent_half, [*GOLD, 0.97], (0, 0, 0)), center.tolist(), quat)
-            seg_w = (abs(x1 - x0) - 0.1) / self.BAR_SEGMENTS
-            seg_half = (seg_w * 0.4 * tan_h * d, 0.012 * tan_v * d, 0.0006)
-            self.bar_ids = [self._body(self._vis("box", seg_half, [*BAR_EMPTY, 0.97], (0, 0, 0)), center.tolist(), quat)
-                            for _ in range(self.BAR_SEGMENTS)]
-            self.bar_filled = [False] * self.BAR_SEGMENTS
-            self.bar_xs = [x0 + 0.05 + seg_w * (k + 0.5) for k in range(self.BAR_SEGMENTS)]
+            # fully transparent: it only carries the screen-pinned banner text
+            self.panel_id = self._body(self._vis("box", (0.001, 0.001, 0.0005), [0, 0, 0, 0], (0, 0, 0)),
+                                       center, quat)
         else:
-            p.resetBasePositionAndOrientation(self.panel_id, center.tolist(), quat)
-
-        def to_world(local):
-            return (center + right * local[0] + up * local[1] - fwd * local[2]).tolist()
-
-        p.resetBasePositionAndOrientation(self.accent_id, to_world(self._panel_local(x0 + 0.006, (y0 + y1) / 2,
-                                                                                      0.001)), quat)
-        for k, bid in enumerate(self.bar_ids):
-            p.resetBasePositionAndOrientation(bid, to_world(self._panel_local(self.bar_xs[k], self.bar_y, 0.001)),
-                                              quat)
-
-    def _set_progress(self, frac, rgb):
-        n = int(round(max(0.0, min(1.0, frac)) * self.BAR_SEGMENTS))
-        for k, bid in enumerate(self.bar_ids):
-            want = k < n
-            if want != self.bar_filled[k] or (want and self.bar_rgb != rgb):
-                self.p.changeVisualShape(bid, -1, rgbaColor=[*(rgb if want else BAR_EMPTY), 0.97])
-                self.bar_filled[k] = want
-        self.bar_rgb = rgb
+            self.p.resetBasePositionAndOrientation(self.panel_id, center, quat)
 
     def _draw_overlay(self, t, pos, lin_vel, fell, weak):
-        """Quest log pinned top-left; event banners top-centre."""
+        """Event banners, pinned top-centre of the screen."""
         self._frame = self._camera_frame()
-        q = self.quest
-        active = q["stage"]
-        x0, y0 = self.PANEL_RECT[0], self.PANEL_RECT[1]
-        row = lambda k: y0 - 0.1 - self.LINE_STEP * k
-        self.bar_y = row(6) + 0.012
         self._place_overlay()
-
-        lines = [("title", q["title"], GOLD, 1.6, 0), ("sub", q["subtitle"], PENDING, 1.05, 1)]
         if t - self.last_hud_t >= self.HUD_EVERY_S or fell:
             self.last_hud_t = t
             self.live = (float(pos[0] - self.start_pos[0]), float(lin_vel[0]))
-        dist, speed = self.live
-        for i, st in enumerate(q["stages"]):
-            res = st.get("result")
-            if i < active and res:
-                rgb = FAULT_RED if res["fell"] else GREEN
-                head = f"[x] STAGE {i + 1}  {st['name']}"
-                detail = f"     {res['distance_m']:.2f} m   " + (
-                    f"fell at {res['fall_time_s']:.1f} s" if res["fell"] else "no fall")
-            elif i == active:
-                rgb = st.get("rgb", CYAN)
-                head = f"> STAGE {i + 1}  {st['name']}"
-                status = "DOWN" if fell else "walking"
-                detail = f"     {dist:4.2f} m   {speed:4.2f} m/s   {status}"
-            else:
-                rgb = DIM
-                head = f"[ ] STAGE {i + 1}  {st['name']}"
-                detail = "     waiting"
-            lines.append((f"h{i}", head, rgb, 1.25, 2.3 + 1.7 * i))
-            lines.append((f"d{i}", detail, FAULT_RED if (i == active and fell) else WHITE, 1.1, 3.1 + 1.7 * i))
-        dur = q["stages"][active]["duration_s"]
-        lines.append(("time", f"STAGE {active + 1} PROGRESS   {min(t, dur):4.1f} / {dur:.0f} s", PENDING, 1.0, 5.75))
-        if weak:
-            lines.append(("fault", "MOTOR FAULT: " + ", ".join(
-                f"{c.name} {100 * c.max_torque / rc.MAX_TORQUE_NM:.0f}%" for c in weak), FAULT_RED, 1.1, 7.1))
-        for key, txt, rgb, size, k in lines:
-            self._text(key, txt, self._panel_local(x0 + 0.055, row(k)), rgb, size, parent=self.panel_id)
-        self._set_progress(t / dur, FAULT_RED if fell else q["stages"][active].get("rgb", CYAN))
 
         shown = set()
         for k, (txt, rgb, size) in enumerate(self.banner):
@@ -639,14 +569,6 @@ class GuiScene:
         fell = self.fell_seen
         pos = self.sim.base_state()[0]
         dist = float(pos[0] - self.start_pos[0]) if self.start_pos is not None else 0.0
-        # final, exact numbers for the finished stage (the live line refreshes at 5 Hz)
-        x0, y0 = self.PANEL_RECT[0], self.PANEL_RECT[1]
-        row = lambda k: y0 - 0.1 - self.LINE_STEP * k
-        done_rgb = FAULT_RED if fell else GREEN
-        self._text(f"h{i}", f"[x] STAGE {i + 1}  {q['stages'][i]['name']}",
-                   self._panel_local(x0 + 0.055, row(2.3 + 1.7 * i)), done_rgb, 1.25, parent=self.panel_id)
-        self._text(f"d{i}", f"     {dist:.2f} m   " + ("fell" if fell else "no fall"),
-                   self._panel_local(x0 + 0.055, row(3.1 + 1.7 * i)), WHITE, 1.1, parent=self.panel_id)
         if i < len(q["stages"]) - 1:
             title = (f"STAGE {i + 1} COMPLETE", GOLD) if not fell else (f"STAGE {i + 1} FAILED", FAULT_RED)
             sub = (result_line, WHITE)

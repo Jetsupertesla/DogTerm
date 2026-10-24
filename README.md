@@ -44,7 +44,6 @@ The GUI (`scene.py`) is a robotics science lab with a game-style quest layer:
 - **Lab:** a tiled floor; a bench run with cabinets, beakers, flasks, test-tube racks, microscopes and monitors showing live plots; shelves of reagent bottles; a periodic-table poster; a whiteboard with the controller equations; caution signs; a wall clock; ceiling lights. Two animated robot arms (KUKA iiwa and Franka Panda) work at the benches.
 - **Quest:** one quest, "FIELD TRIAL", spans both demo sets.
   - Stage 1 is the healthy walk; stage 2 is the same walk with the injured motor.
-  - A quest log pinned to the screen shows both stages with live and then final results (distance, fell or not), plus a segmented progress bar for the active stage.
   - Banners announce STAGE 1 COMPLETE, MOTOR FAILURE, ROBOT DOWN, and the verdict: QUEST FAILED, "injury cost N% of the distance - the gait must adapt".
   - A spotlight under the robot turns from cyan to red when a motor fails, and the faulted motor's link is tinted red.
   - `simulate(..., gui_quest=...)` takes the quest description (see `scene.DEFAULT_QUEST`); it is purely visual.
