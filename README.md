@@ -30,7 +30,7 @@ uses a prebuilt wheel or compiles from source with the Xcode command-line tools.
 ## Run
 
 ```bash
-python -m roboevolve.demo_walk                 # GUI: SET 1 healthy (12 s), then SET 2 injured (20 s)
+python -m roboevolve.demo_walk                 # GUI: stage 1 healthy (12 s), 2 injured (20 s), 3 adapted (20 s)
 python -m roboevolve.demo_walk --headless      # same two sets, metrics + before/after table
 python -m roboevolve.demo_walk --only healthy  # a single set
 python -m roboevolve.demo_walk --fault-joint front_left_calf --fault-strength 0.3   # milder injury
@@ -56,6 +56,11 @@ Demo sets:
 - **Set 2 (injury):** defaults to a dead front-left calf (`torque_loss`, strength 0) from t = 0. It runs the full 20 s even after a fall (`--injured-duration`, `--fault-start`, `--fault-strength`).
 - **Measured with default gait params:** healthy, 4.53 m in 12 s; injured, 0.80 m and a fall at 2.6 s.
 - **Milder injuries for comparison:** a calf at 30% strength still covers 7.6 m in 20 s, and thigh faults are mostly tolerated.
+- **Stage 3 (adapted gait):** replays the gait in `roboevolve/data/adapted_gait.json` with the same injury for the same 20 s.
+  - Regenerate the gait with `python -m roboevolve.make_adapted_gait` (`--budget`, `--restarts`). It runs Person 3's `optimise_controller` under the demo's conditions: motor dead from t = 0, 20 s trials, scored on the demo start plus a noisy start. It then re-checks the result with `simulate()` exactly as the demo will run it.
+  - Current gait (4 restarts × ≤80 sims, numeric proposer, no LLM): **1.88 m, fell at 18.2 s**, against 0.80 m and a fall at 2.6 s for the unadapted gait. It is a clear improvement but not yet a full recovery.
+  - Why not reuse the gait from `demo_rsi`: those gaits were tuned on 8 s trials. In 20 s demo conditions they fell (3.3 s, 2.2 s, and 18.2 s for the three seeds).
+  - Stage 3 is skipped, with a message, if the gait file is missing or was made for a different injury.
 
 ## Headless API
 

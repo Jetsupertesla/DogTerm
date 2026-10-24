@@ -4,6 +4,7 @@ Run:  python -m pytest roboevolve/tests -s
 (-s shows the measured numbers printed by each test.)
 """
 
+import json
 import math
 
 import numpy as np
@@ -258,3 +259,21 @@ def test_e_seed_noise_reproducible():
     c = simulate(DEFAULT_CONTROLLER_PARAMS, seed=2, **kw)
     assert a["distance_m"] == b["distance_m"]
     assert a["distance_m"] != c["distance_m"]
+
+
+# ------------------------------------------- demo stage 3 (adapted gait file)
+def test_load_adapted_gait_checks(tmp_path):
+    from roboevolve.demo_walk import load_adapted_gait
+    fault = {"joint": "front_left_calf", "type": "torque_loss", "strength": 0.0, "start_time_s": 0.0}
+    params, note = load_adapted_gait(tmp_path / "missing.json", fault)
+    assert params is None and "make_adapted_gait" in note
+
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"params": {"kp": 1.0}, "fault": {**fault, "joint": "rear_left_thigh"}}))
+    params, note = load_adapted_gait(other, fault)
+    assert params is None and "rear_left_thigh" in note
+
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"params": {"kp": 0.9}, "fault": fault, "provenance": {"optimiser": "x"}}))
+    params, _ = load_adapted_gait(good, fault)
+    assert params == {"kp": 0.9}

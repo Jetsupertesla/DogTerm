@@ -1,0 +1,38 @@
+{
+  "params": {
+    "frequency_hz": 0.577762248144035,
+    "stride_scale": 0.9011690711035243,
+    "step_height_m": 0.05861982877007632,
+    "phase_offsets": [
+      0.0,
+      0.5,
+      0.5,
+      0.0
+    ],
+    "kp": 1.2481393685994535,
+    "kd": 1.0080289648031933,
+    "duty_factor": 0.7686715718644841,
+    "body_height_offset_m": 0.040063455098124104
+  },
+  "fault": {
+    "joint": "front_left_calf",
+    "type": "torque_loss",
+    "strength": 0.0,
+    "start_time_s": 0.0
+  },
+  "measured_in_demo_conditions": {
+    "distance_m": 1.8760148824956917,
+    "fell": true,
+    "fall_time_s": 18.238,
+    "sim_time_s": 20.0
+  },
+  "provenance": {
+    "optimiser": "optimizer.optimise_controller (Person 3), numeric proposer, no LLM",
+    "budget_per_restart": 80,
+    "restarts": 4,
+    "chosen_restart": 2,
+    "trial_duration_s": 20.0,
+    "contexts": "demo start (no noise) + noisy start (0.02 rad)",
+    "runtime_s": 105.1
+  }
+}

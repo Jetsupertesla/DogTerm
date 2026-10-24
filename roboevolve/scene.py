@@ -179,6 +179,7 @@ class GuiScene:
         # quest state (stage results are supplied by the caller, e.g. demo_walk)
         self.quest = quest or {**DEFAULT_QUEST, "title": label or DEFAULT_QUEST["title"]}
         self.fault_seen = False
+        self.intro_shown = False
         self.fell_seen = False
         self.event_banner = None
         self.banner: list = []
@@ -471,8 +472,12 @@ class GuiScene:
         p.resetBasePositionAndOrientation(
             self.clock_hand, [c[0] + 0.08 * math.sin(ang), c[1], c[2] + 0.08 * math.cos(ang)],
             p.getQuaternionFromEuler([0, ang, 0]))
-        # spotlight follows the robot and turns red once a motor is faulted
-        rgb = FAULT_RED if weak else CYAN
+        # spotlight follows the robot: red once a motor is faulted, green on an
+        # adapted-gait stage (same fault, new controller)
+        if weak:
+            rgb = GREEN if self._stage().get("adapted") and not self.fell_seen else FAULT_RED
+        else:
+            rgb = CYAN
         if rgb != self.spot_rgb:
             p.changeVisualShape(self.spot_glow, -1, rgbaColor=[*rgb, 0.12])
             p.changeVisualShape(self.spot_core, -1, rgbaColor=[*rgb, 0.22])
@@ -481,8 +486,16 @@ class GuiScene:
         p.resetBasePositionAndOrientation(self.spot_glow, [pos[0], pos[1], 0.0035], [0, 0, 0, 1])
         p.resetBasePositionAndOrientation(self.spot_core, [pos[0], pos[1], pulse], [0, 0, 0, 1])
 
+    def _stage(self) -> dict:
+        return self.quest["stages"][self.quest["stage"]]
+
     def _update_events(self, t, weak, fell):
-        """Timed event banners: motor failure, robot down."""
+        """Timed event banners: stage intro, motor failure, robot down."""
+        intro = self._stage().get("intro")
+        if intro and not self.intro_shown:
+            self.intro_shown = True
+            self.fault_seen = True  # the intro already explains the stage's fault
+            self.event_banner = ((intro[0], GREEN, 2.8), (intro[1], WHITE, 1.5), t + 3.5)
         if weak and not self.fault_seen:
             self.fault_seen = True
             self.event_banner = (("MOTOR FAILURE", FAULT_RED, 2.8),
@@ -569,21 +582,24 @@ class GuiScene:
         fell = self.fell_seen
         pos = self.sim.base_state()[0]
         dist = float(pos[0] - self.start_pos[0]) if self.start_pos is not None else 0.0
-        if i < len(q["stages"]) - 1:
+        base = q["stages"][0].get("result") if i > 0 else None
+        pct = 100 * dist / base["distance_m"] if base and base["distance_m"] > 0 else None
+        last = i == len(q["stages"]) - 1
+        stage = q["stages"][i]
+        if stage.get("adapted"):
+            title = ("QUEST COMPLETE", GOLD) if not fell else ("QUEST FAILED", FAULT_RED)
+            sub = (f"adapted gait: {dist:.2f} m on the injured leg - {pct:.0f}% of the healthy distance"
+                   if pct is not None else result_line, WHITE if not fell else FAULT_RED)
+        elif i > 0 and pct is not None:
+            if last:
+                title = ("QUEST FAILED", FAULT_RED) if fell else ("QUEST COMPLETE", GOLD)
+            else:
+                title = (f"STAGE {i + 1} FAILED", FAULT_RED) if fell else (f"STAGE {i + 1} COMPLETE", GOLD)
+            sub = (f"injury cost {100 - pct:.0f}% of the distance - the gait must adapt"
+                   if fell or pct < 90 else "the robot coped with the injury", FAULT_RED if fell else WHITE)
+        else:
             title = (f"STAGE {i + 1} COMPLETE", GOLD) if not fell else (f"STAGE {i + 1} FAILED", FAULT_RED)
             sub = (result_line, WHITE)
-        else:
-            base = q["stages"][0].get("result")
-            if fell:
-                title = ("QUEST FAILED", FAULT_RED)
-            else:
-                title = ("QUEST COMPLETE", GOLD)
-            if base and base["distance_m"] > 0:
-                lost = 100 * (1 - dist / base["distance_m"])
-                sub = (f"injury cost {lost:.0f}% of the distance - the gait must adapt"
-                       if fell or lost > 10 else "the robot coped with the injury", FAULT_RED if fell else WHITE)
-            else:
-                sub = (result_line, WHITE)
         self.banner = [(title[0], title[1], 3.0), (sub[0], sub[1], 1.5)]
         for k, (txt, rgb, size) in enumerate(self.banner):
             local = self._panel_local(max(-0.25, 0.08 - 0.0095 * size * len(txt)), self.BANNER_Y - self.BANNER_STEP * k)
