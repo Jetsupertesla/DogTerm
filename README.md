@@ -139,8 +139,9 @@ res["final_cell"], res["all_succeeded"], res["trajectory"], res["telemetry"]   #
   - points the strokes at the target cell centre, and slows down inside 0.2 m;
   - steers yaw back to the spawn heading with a differential stroke;
   - levels the body: each foot's height shifts by `roll·y_hip − pitch·x_hip`, plus a rate term;
-  - ramps down to the standing pose within 3 cm of the target, then judges the error after 0.5 s standing.
-- **Failures are reported, not hidden:** a move fails if the robot falls, times out (12 s), or settles outside 5 cm of the centre.
+  - ramps down to the standing pose once within 3 cm of the target and 0.02 rad of the spawn heading, then judges the result after 0.5 s standing;
+  - if the robot is on the cell but still turned, it steps in place with only the yaw stroke. A move is only a few strides, too short for the heading to settle on its own.
+- **Failures are reported, not hidden:** a move fails if the robot falls, times out (12 s), or settles more than 5 cm from the centre or more than 0.05 rad off heading. In the last two cases it walks again until the timeout.
   - After a timeout, the next move still aims at the next *planned* cell.
   - After a fall, the remaining moves are marked `attempted: False`.
 - **Faults:** every command still goes through `send_motor_commands`, so faults apply in every direction.
@@ -153,10 +154,12 @@ res["final_cell"], res["all_succeeded"], res["trajectory"], res["telemetry"]   #
 
 | move | success | falls | error mean / max | time mean / max |
 |---|---|---|---|---|
-| FORWARD | 20/20 | 0 | 0.9 / 2.7 cm | 2.9 / 4.5 s |
-| BACK | 20/20 | 0 | 1.4 / 4.0 cm | 3.0 / 3.7 s |
-| LEFT | 20/20 | 0 | 2.0 / 3.6 cm | 3.5 / 4.0 s |
-| RIGHT | 20/20 | 0 | 2.0 / 2.9 cm | 3.4 / 3.9 s |
+| FORWARD | 20/20 | 0 | 1.1 / 2.7 cm | 2.9 / 3.8 s |
+| BACK | 20/20 | 0 | 1.4 / 4.0 cm | 3.0 / 4.0 s |
+| LEFT | 20/20 | 0 | 1.9 / 2.8 cm | 3.6 / 4.0 s |
+| RIGHT | 20/20 | 0 | 2.1 / 4.0 cm | 3.5 / 4.3 s |
+
+The worst final heading over these 80 moves is 0.022 rad (1.3°).
 
 **Paths, sweeps and faults:**
 - **8-move path:** `F,F,L,L,B,B,R,R` returned home on 20/20 seeds, with a mean error of 1.6 cm per move and 26 s in total.
@@ -164,10 +167,10 @@ res["final_cell"], res["all_succeeded"], res["trajectory"], res["telemetry"]   #
   - **Without levelling:** a roll sway of about 0.5 Hz builds up while side-stepping, reverses the sideways motion and tips the robot.
     - It fell on 1 of 20 `F,L` runs even at `lateral_stride_scale` 0.3.
     - At 0.7 it fell on 4 of 12 single moves.
-  - **With levelling:** the 8-move path passes 20/20 up to 1.0 and tips 2 of 20 at 1.2. The default of 0.8 keeps a margin.
+  - **With levelling:** the 8-move path passes 20/20 up to 1.0. At 1.2 it tipped 2 of 20 before the heading fix and 1 of 20 after. The default of 0.8 keeps a margin.
 - **Injured robot:**
-  - A dead front-left calf falls about 2.3 s into the first move. The run reports FELL, and the remaining moves are not attempted.
-  - At 30% calf strength, `F,L,B,R` still returns home (4/4 moves, 18 s).
+  - A dead front-left calf falls about 2.4 s into the first move. The run reports FELL, and the remaining moves are not attempted.
+  - At 30% calf strength, `F,L,B,R` still returns home (4/4 moves, 16 s).
 
 ## Controller parameters
 

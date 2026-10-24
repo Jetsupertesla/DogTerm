@@ -22,8 +22,9 @@ the base position and yaw every control step and
   that eventually reverses the sideways motion and tips the robot;
 * ramps stride and step height up at the start of a move and back down to the
   standing pose once inside ``arrive_radius_m``, then waits ``settle_s`` and
-  checks the final error against ``tolerance_m``.  If the robot settled
-  outside the tolerance it walks again (until ``max_move_s``).
+  checks the final error against ``tolerance_m`` (and the heading against
+  ``yaw_tolerance_rad``).  If the robot settled outside either it walks
+  again (until ``max_move_s``).
 
 Gait settings that only matter for grid moves live in :class:`GridMoveConfig`,
 not in ``controller.DEFAULT_CONTROLLER_PARAMS``: the optimiser searches every
@@ -103,8 +104,8 @@ class GridMoveConfig:
     The stroke scales multiply ``controller.BASE_STRIDE_M`` (0.10 m) like
     ``stride_scale`` does.  Defaults come from 20-seed sweeps with 0.03 rad
     initial joint noise (README, "Grid moves"): with level-body feedback an
-    8-move path is 20/20 up to ``lateral_stride_scale`` 1.0 and tips 2/20 at
-    1.2, so 0.8 keeps a margin.  Without the feedback side-stepping fell even
+    8-move path is 20/20 up to ``lateral_stride_scale`` 1.0 and tips 1-2 of
+    20 at 1.2, so 0.8 keeps a margin.  Without the feedback side-stepping fell even
     at 0.3.
     """
 
@@ -115,8 +116,11 @@ class GridMoveConfig:
     yaw_gain: float = 4.0               # yaw command per rad of heading error
     slow_radius_m: float = 0.20         # full stride beyond this distance to target
     min_command: float = 0.25           # floor on the stroke fraction while walking
-    arrive_radius_m: float = 0.03       # start stopping inside this distance
+    arrive_radius_m: float = 0.03       # start stopping inside this distance...
+    arrive_yaw_rad: float = 0.02        # ...and with the heading this close to the spawn heading
     tolerance_m: float = 0.05           # success: settled within this of the centre
+    yaw_tolerance_rad: float = 0.05     # ...and this close in heading (else walk again)
+    min_yaw_command: float = 0.25       # floor on the yaw command while correcting heading
     settle_s: float = 0.5               # standing time before the error is judged
     settle_speed_m_s: float = 0.05      # ...and the base must be this slow
     ramp_s: float = 0.4                 # stride/step-height ramp up and down
@@ -200,7 +204,8 @@ class CellNavigator:
 
         if self.status in ("walking", "stopping") and t - self.move_start_t > cfg.max_move_s:
             self.status = "timeout"
-        if self.status == "walking" and dist < cfg.arrive_radius_m:
+        arrived = dist < cfg.arrive_radius_m
+        if self.status == "walking" and arrived and abs(yaw) < cfg.arrive_yaw_rad:
             self.status = "stopping"
             self.still_since = None
 
@@ -208,11 +213,18 @@ class CellNavigator:
             # body-frame direction to the target; full stride far away, slowing
             # inside slow_radius but never below min_command (the feet need a
             # minimum stroke to overcome stiction and actually move the body).
+            # Once on the cell but still turned, step in place and only yaw:
+            # a move is a few strides, too short for the heading to settle
+            # by itself (a BACK move ended 4.5 deg off on CI's PyBullet build).
             c, s = math.cos(yaw), math.sin(yaw)
             eb = np.array([c * err[0] + s * err[1], -s * err[0] + c * err[1]])
-            frac = max(cfg.min_command, min(dist / cfg.slow_radius_m, 1.0))
+            frac = min(dist / cfg.slow_radius_m, 1.0)
+            if not arrived:
+                frac = max(cfg.min_command, frac)
             v = eb / max(dist, 1e-9) * frac
             w = float(np.clip(-cfg.yaw_gain * yaw, -1.0, 1.0))
+            if abs(yaw) >= cfg.arrive_yaw_rad:
+                w = math.copysign(max(abs(w), cfg.min_yaw_command), w)
             goal, amp_goal = np.array([v[0], v[1], w]), 1.0
         else:
             goal, amp_goal = np.zeros(3), 0.0
@@ -230,11 +242,11 @@ class CellNavigator:
             elif self.still_since is None:
                 self.still_since = t
             elif t - self.still_since >= cfg.settle_s:
-                if dist <= cfg.tolerance_m:
+                if dist <= cfg.tolerance_m and abs(yaw) <= cfg.yaw_tolerance_rad:
                     self.status = "done"
                     self.cell = self.target_cell
                 else:
-                    self.status = "walking"  # settled off-centre: correct it
+                    self.status = "walking"  # settled off-centre or turned: correct it
         self.lift = self._level_body(roll, pitch, yaw, ang_vel)
         return self.joint_targets(t)
 

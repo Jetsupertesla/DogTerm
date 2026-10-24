@@ -433,8 +433,8 @@ def simulate_moves(
     ``fell``, ``energy_j``, ...) plus:
       moves            one dict per requested move: index, direction,
                        start_cell, target_cell, final_cell, final_error_m,
-                       success, time_s (move duration), timed_out, fell,
-                       attempted.
+                       final_yaw_rad, success, time_s (move duration),
+                       timed_out, fell, attempted.
       planned_cells    the cells the moves should visit, start cell first.
       final_cell       the cell the base ended in.
       all_succeeded    every move succeeded.
@@ -469,10 +469,10 @@ def simulate_moves(
         def finish_move():
             final_cell = world_to_cell(pos[0], pos[1], cfg.cell_size_m)
             err = float(np.hypot(*(cell_to_world(*current["target_cell"], cfg.cell_size_m) - pos[:2])))
-            current.update(final_cell=final_cell, final_error_m=err, time_s=sim.time_s - current.pop("_t0"),
-                           timed_out=nav.status == "timeout", fell=fell)
+            current.update(final_cell=final_cell, final_error_m=err, final_yaw_rad=float(rpy[2]),
+                           time_s=sim.time_s - current.pop("_t0"), timed_out=nav.status == "timeout", fell=fell)
             current["success"] = (nav.status == "done" and not fell and final_cell == current["target_cell"]
-                                  and err <= cfg.tolerance_m)
+                                  and err <= cfg.tolerance_m and abs(rpy[2]) <= cfg.yaw_tolerance_rad)
             results.append(current)
 
         while sim.step_count < max_steps:
@@ -530,6 +530,7 @@ def simulate_moves(
             prev = results[-1]["target_cell"] if results else planned[0]
             results.append({"index": k, "direction": moves[k].name, "start_cell": prev,
                             "target_cell": planned[k + 1], "final_cell": None, "final_error_m": None,
+                            "final_yaw_rad": None,
                             "success": False, "time_s": 0.0, "timed_out": False, "fell": fell,
                             "attempted": False})
         if rec.trajectory and rec.trajectory[-1]["t"] != sim.time_s:
