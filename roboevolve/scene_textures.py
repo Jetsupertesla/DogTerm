@@ -20,7 +20,7 @@ import numpy as np
 
 from . import robot_config as rc
 
-VERSION = "v4"
+VERSION = "v5"
 CACHE_DIR = os.path.join(tempfile.gettempdir(), f"roboevolve_textures_{VERSION}")
 
 # palette (hex for matplotlib)
@@ -115,6 +115,41 @@ def floor_texture() -> str:
     return _cached("floor", "floor", _save_array(build))
 
 
+def ceiling_texture() -> str:
+    """2.4 m of suspended ceiling: 4x4 acoustic tiles, one recessed LED panel (repeat over the roof)."""
+    def build():
+        n, tiles = 1024, 4
+        rng = np.random.default_rng(21)
+        step = n // tiles
+        img = np.ones((n, n, 3)) * (0.90, 0.91, 0.92)
+        img += rng.normal(0, 0.012, (n, n, 1))                       # fissured acoustic finish
+        yy, xx = np.mgrid[0:n, 0:n]
+        img[((xx % step) < 6) | ((yy % step) < 6)] = (0.74, 0.76, 0.79)  # T-bar grid
+        img[((xx % step) == 6) | ((yy % step) == 6)] += 0.05
+        # one LED panel per repeat: bright, with a soft edge glow
+        x0, y0 = step * 1, step * 1
+        panel = (xx >= x0 + 14) & (xx < x0 + step - 8) & (yy >= y0 + 14) & (yy < y0 + step - 8)
+        dx = np.minimum(np.abs(xx - (x0 + 14)), np.abs(xx - (x0 + step - 8)))
+        dy = np.minimum(np.abs(yy - (y0 + 14)), np.abs(yy - (y0 + step - 8)))
+        edge = np.minimum(dx, dy)
+        img[panel] = (0.99, 0.995, 1.0)
+        glow = (~panel) & (edge < 18) & (xx > x0) & (xx < x0 + step) & (yy > y0) & (yy < y0 + step)
+        img[glow] += 0.05
+        return img
+    return _cached("ceiling", "ceiling1", _save_array(build))
+
+
+def led_strip_texture() -> str:
+    """Diffuser of a linear LED light: bright centre, slightly cooler edges."""
+    def build():
+        h, w = 64, 1024
+        v = np.abs(np.linspace(-1, 1, h))[:, None]
+        img = np.ones((h, w, 3)) * (1.0, 1.0, 1.0)
+        img -= (v ** 4)[..., None] * np.array([0.10, 0.06, 0.02])
+        return img
+    return _cached("ledstrip", "ledstrip1", _save_array(build))
+
+
 def wall_panel_texture() -> str:
     """One 1.2 m modular wall panel with recessed seams (repeated over the walls)."""
     def build():
@@ -165,7 +200,7 @@ def status_texture(state: str, stage: int, n_stages: int, stage_name: str, fault
         from matplotlib.patches import Rectangle
         ax = _full_axes(fig, xlim=(0, 16), ylim=(0, 9))
         ax.add_patch(Rectangle((0, 8.1), 16, 0.9, color=NAVY_2))
-        ax.text(0.4, 8.55, "ROBOEVOLVE  //  FIELD TRIAL", color=WHITE, fontsize=40, weight="bold", va="center")
+        ax.text(0.4, 8.55, "DOGTERM  //  FIELD TRIAL", color=WHITE, fontsize=40, weight="bold", va="center")
         ax.text(15.6, 8.55, f"STAGE {stage + 1} / {n_stages}", color=MUTED, fontsize=40, va="center", ha="right")
         ax.add_patch(Rectangle((0, 8.05), 16, 0.06, color=color))
         ax.text(0.45, 6.75, title, color=color, fontsize=128, weight="bold", va="center")
@@ -211,8 +246,8 @@ def logo_texture() -> str:
     def draw(fig):
         ax = _full_axes(fig, xlim=(0, 16), ylim=(0, 2))
         ax.plot([0.3, 15.7], [0.22, 0.22], color=CYAN, lw=6)
-        ax.text(0.35, 1.08, "ROBOEVOLVE", color=WHITE, fontsize=88, weight="bold", va="center")
-        ax.text(8.0, 1.06, "FAULT-ADAPTIVE LOCOMOTION LAB", color=CYAN, fontsize=36, va="center")
+        ax.text(0.35, 1.08, "DOGTERM", color=WHITE, fontsize=88, weight="bold", va="center")
+        ax.text(6.2, 1.06, "FAULT-ADAPTIVE LOCOMOTION LAB", color=CYAN, fontsize=36, va="center")
     return _cached("logo", "logo3", _save_figure(2048, 256, NAVY, draw))
 
 

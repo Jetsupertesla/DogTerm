@@ -22,6 +22,7 @@ AMBER = (1.0, 0.65, 0.05)
 class ParallelScene(GuiScene):
     TAG_EVERY_S = 0.2
     LAB_EVERY_S = 0.2
+    INTRO_S = 3.0
 
     def __init__(self, display, lanes: list[dict], title: str | None = None):
         self.lanes = lanes
@@ -68,7 +69,14 @@ class ParallelScene(GuiScene):
         tgt = np.array([(max(xs) + min(xs)) / 2 + 0.2, mid_y + 0.55, 0.2])
         self.cam_target = tgt if self.cam_target is None else self.cam_target + 0.08 * (tgt - self.cam_target)
         dist = float(np.clip(3.4 + 0.38 * span, 3.4, 6.0))
-        p.resetDebugVisualizerCamera(dist, 2.0 + 4.0 * math.sin(t * 0.15), -30.0, self.cam_target.tolist())
+        pitch = -30.0
+        # opening shot: start wide and low enough to show the hall and its roof,
+        # then ease into the tracking view over INTRO_S
+        b = min(t / self.INTRO_S, 1.0)
+        b = b * b * (3 - 2 * b)
+        target = (1 - b) * np.array([3.0, mid_y + 1.2, 1.6]) + b * self.cam_target
+        p.resetDebugVisualizerCamera((1 - b) * 7.5 + b * dist, 2.0 + 4.0 * math.sin(t * 0.15),
+                                     (1 - b) * -6.0 + b * pitch, target.tolist())
 
         tag_now = t - self.last_tag_t >= self.TAG_EVERY_S
         if tag_now:

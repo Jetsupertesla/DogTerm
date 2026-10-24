@@ -42,7 +42,7 @@ TRACK_LENGTH_M = 14.0
 TRACK_HALF_WIDTH_M = 0.53
 BACK_WALL_Y = 3.6
 ROOM_X = (-6.0, 18.0)
-WALL_H = 3.6
+WALL_H = 4.8
 WALL_PANEL_M = 1.2
 BENCH_Y = BACK_WALL_Y - 0.40
 BENCH_TOP = 0.93
@@ -115,20 +115,23 @@ class LabBuilder:
             self._tex_cache[path] = self.p.loadTexture(path)
         return self._tex_cache[path]
 
-    def quad(self, center, w, h, tex_path, euler=(0.0, 0.0, 0.0), uv=(0.0, 0.0, 1.0, 1.0), specular=0.15):
+    def quad(self, center, w, h, tex_path, euler=(0.0, 0.0, 0.0), uv=(0.0, 0.0, 1.0, 1.0), specular=0.15,
+             lit_from_behind=False):
         """Textured w x h rectangle; unrotated it stands upright facing -y (toward the camera).
 
         ``uv`` = (u0, v0, u1, v1); values above 1 tile the texture.  Use
         euler=(-pi/2, 0, 0) for a floor decal (image top pointing +y).
+        ``lit_from_behind`` flips only the lighting normal: a ceiling (facing
+        down, away from the single overhead light) then renders fully lit.
         """
         p = self.p
-        key = ("quad", w, h, uv, specular)
+        key = ("quad", w, h, uv, specular, lit_from_behind)
         if key not in self._vis_cache:
             u0, v0, u1, v1 = uv
             verts = [[-w / 2, 0, -h / 2], [w / 2, 0, -h / 2], [w / 2, 0, h / 2], [-w / 2, 0, h / 2]]
             self._vis_cache[key] = p.createVisualShape(
                 p.GEOM_MESH, vertices=verts, indices=[0, 1, 2, 0, 2, 3],
-                uvs=[[u0, v0], [u1, v0], [u1, v1], [u0, v1]], normals=[[0, -1, 0]] * 4,
+                uvs=[[u0, v0], [u1, v0], [u1, v1], [u0, v1]], normals=[[0, 1 if lit_from_behind else -1, 0]] * 4,
                 rgbaColor=[1, 1, 1, 1], specularColor=[specular] * 3)
         b = self.body(self._vis_cache[key], center, p.getQuaternionFromEuler(euler))
         p.changeVisualShape(b, -1, textureUniqueId=self.texture(tex_path))
@@ -177,6 +180,33 @@ class LabBuilder:
                       uv=(0, 0, depth / WALL_PANEL_M, WALL_H / WALL_PANEL_M))
             self.box([x + off, y - depth / 2, 0.6], [0.004, depth / 2, 0.6], WAINSCOT)
         self.box([cx, BENCH_Y - 0.62, 0.0022], [hx, 0.025, 0.0022], HAZARD)            # walkway safety line
+        self._build_roof(x0, x1, y - depth, y)
+
+    def _build_roof(self, x0, x1, y0, y1):
+        """Suspended tile ceiling with LED panels, steel roof beams and linear light strips.
+
+        Every roof part is very slightly translucent: PyBullet draws those in its
+        transparent pass, which does not cast shadows, so the roof does not plunge
+        the lab (lit by one overhead shadow light) into darkness.
+        """
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        w, d = x1 - x0, y1 - y0
+        ceil = self.quad([cx, cy, WALL_H], w, d, tx.ceiling_texture(), euler=(math.pi / 2, 0, 0),
+                         uv=(0, 0, w / 2.4, d / 2.4), specular=0.05, lit_from_behind=True)
+        self.p.changeVisualShape(ceil, -1, rgbaColor=[1, 1, 1, 0.985])
+        steel, beam_h = (0.20, 0.23, 0.27), 0.28
+        for x in np.arange(x0 + 1.5, x1 - 0.5, 3.0):                 # steel beams across the room
+            self.box([x, cy, WALL_H - beam_h / 2], [0.09, d / 2, beam_h / 2], steel, alpha=0.985)
+            self.box([x, cy, WALL_H - beam_h - 0.006], [0.10, d / 2, 0.006], CYAN, alpha=0.985,
+                     specular=NO_SHINE)                               # accent edge
+        for y in (y1 - 1.2, cy, y0 + 1.6):                            # linear LED strips between beams
+            for x in np.arange(x0 + 3.0, x1 - 1.0, 3.0):
+                self.box([x, y, WALL_H - 0.33], [1.2, 0.07, 0.025], (0.12, 0.13, 0.15), alpha=0.985)
+                strip = self.quad([x, y, WALL_H - 0.357], 2.34, 0.11, tx.led_strip_texture(),
+                                  euler=(math.pi / 2, 0, 0), specular=0.0, lit_from_behind=True)
+                self.p.changeVisualShape(strip, -1, rgbaColor=[1, 1, 1, 0.985])
+                for dx in (-0.9, 0.9):                                # hanger rods
+                    self.cyl([x + dx, y, WALL_H - 0.16], 0.006, 0.32, steel, alpha=0.985)
 
     def _build_benches(self):
         """Lab bench run along the back wall, stocked with equipment."""

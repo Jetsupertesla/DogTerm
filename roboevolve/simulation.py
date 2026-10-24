@@ -127,6 +127,8 @@ class QuadrupedSim:
         if self.client is not None:
             try:
                 self.client.disconnect()
+            except pybullet.error:
+                pass  # already disconnected, e.g. the GUI window was closed by the user
             finally:
                 self.client = None
 
@@ -575,12 +577,21 @@ def simulate_parallel(
 
         n_frames = -(-n_steps // frame_every)
         wall_start = time.perf_counter()
+        window_open = True
         for f in range(1, n_frames + 1):
-            for ln in lanes:
-                _apply_frame(ln, ln["conn"].recv())
+            frames = [ln["conn"].recv() for ln in lanes]
+            if not window_open:
+                continue  # the workers keep simulating; just drain their frames
             t_now = min(f * frame_every, n_steps) * TIME_STEP_S
-            display.step_count = int(round(t_now / TIME_STEP_S))
-            display.scene.update(t_now)
+            try:
+                for ln, frame in zip(lanes, frames):
+                    _apply_frame(ln, frame)
+                display.step_count = int(round(t_now / TIME_STEP_S))
+                display.scene.update(t_now)
+            except pybullet.error:
+                window_open = False  # GUI window closed mid-run: finish headless
+                print("GUI window closed; finishing the trial without it", flush=True)
+                continue
             if realtime:
                 lag = t_now - (time.perf_counter() - wall_start)
                 if lag > 0:
@@ -590,8 +601,12 @@ def simulate_parallel(
         for ln in lanes:
             tag, res = ln["conn"].recv()
             results.append(res)
-        display.scene.finish(results)
-        time.sleep(max(gui_hold_s, 0.0))
+        if window_open:
+            try:
+                display.scene.finish(results)
+                time.sleep(max(gui_hold_s, 0.0))
+            except pybullet.error:
+                pass
         return results
     finally:
         for proc, conn in workers:
