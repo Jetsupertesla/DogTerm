@@ -65,7 +65,7 @@ class QuadrupedSim:
     released -- important for repeated headless optimisation runs.
     """
 
-    def __init__(self, gui: bool = False):
+    def __init__(self, gui: bool = False, gui_label: str | None = None, gui_label_rgb=None):
         self.gui = gui
         if gui:
             from .scene import WINDOW_OPTIONS
@@ -109,8 +109,8 @@ class QuadrupedSim:
         # Visual-only arena/HUD; never built for headless runs.
         self.scene = None
         if gui:
-            from .scene import GuiScene
-            self.scene = GuiScene(self)
+            from .scene import CYAN, GuiScene
+            self.scene = GuiScene(self, gui_label, gui_label_rgb or CYAN)
 
     # -- lifecycle ---------------------------------------------------------
     def close(self):
@@ -254,6 +254,8 @@ def simulate(
     realtime: bool | None = None,
     initial_joint_noise_rad: float = 0.0,
     gui_hold_s: float = 0.0,
+    gui_label: str | None = None,
+    gui_label_rgb: tuple | None = None,
 ) -> dict:
     """Run one trial and return metrics + telemetry.
 
@@ -270,6 +272,7 @@ def simulate(
       realtime: pace to wall-clock time (defaults to ``gui``).
       initial_joint_noise_rad: uniform noise added to the initial joint angles.
       gui_hold_s: in GUI mode, keep the window open this long after the trial.
+      gui_label, gui_label_rgb: optional banner shown in the GUI scene.
 
     Returns a dict:
       distance_m         forward displacement (+x, the robot's initial heading)
@@ -293,7 +296,7 @@ def simulate(
     hook = motor_hook if motor_hook is not None else _resolve_fault_hook(fault, rng)
     realtime = gui if realtime is None else realtime
 
-    with QuadrupedSim(gui=gui) as sim:
+    with QuadrupedSim(gui=gui, gui_label=gui_label, gui_label_rgb=gui_label_rgb) as sim:
         sim.motor_hook = hook
         if initial_joint_noise_rad > 0:
             for name, idx in sim.joint_map.items():

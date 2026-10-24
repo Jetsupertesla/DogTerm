@@ -59,12 +59,55 @@ def _floor_texture_path() -> str:
     return path
 
 
+def _bring_window_to_front() -> bool:
+    """Raise this process's PyBullet window (Windows only; best effort).
+
+    A second GUI window opened from the same process (e.g. the injured set of
+    demo_walk) otherwise appears behind the terminal.  The window is created
+    asynchronously, so callers retry for the first frames.  Returns True once
+    the window was found.
+    """
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        pid = os.getpid()
+        found = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _enum(hwnd, _):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, buf, 256)
+                if buf.value.startswith("Bullet Physics"):
+                    found.append(hwnd)
+            return True
+
+        user32.EnumWindows(_enum, 0)
+        user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        HWND_TOPMOST, HWND_NOTOPMOST = wintypes.HWND(-1), wintypes.HWND(-2)
+        flags = 0x0001 | 0x0002 | 0x0040  # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+        for hwnd in found:
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            user32.SetForegroundWindow(hwnd)
+        return bool(found)
+    except Exception:
+        return True  # don't keep retrying if the Win32 calls are unavailable
+
+
 class GuiScene:
     """Builds the arena once and updates HUD / trail / camera every frame."""
 
     FRAME_EVERY_S = 1.0 / 30.0
 
-    def __init__(self, sim):
+    def __init__(self, sim, label: str | None = None, label_rgb=CYAN):
         self.sim = sim
         p = self.p = sim.client
         p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
@@ -84,6 +127,8 @@ class GuiScene:
         self._build_track()
         self._build_decor()
         p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
+        self.window_raised = False
+        self.label, self.label_rgb, self.label_id = label, label_rgb, -1
 
         self.hud_id = -1
         self.fault_id = -1
@@ -165,6 +210,8 @@ class GuiScene:
             return
         self.last_frame_t = t
         p = self.p
+        if not self.window_raised and t >= 0.1:
+            self.window_raised = _bring_window_to_front() or t > 1.0
         if self.start_pos is None:
             self.start_pos = pos.copy()
 
@@ -181,7 +228,11 @@ class GuiScene:
             p.addUserDebugLine(self.trail_prev, cur, list(MAGENTA if fell else CYAN), lineWidth=4.0)
         self.trail_prev = cur
 
-        # HUD above the robot
+        # set label + HUD above the robot
+        if self.label:
+            self.label_id = p.addUserDebugText(self.label, [pos[0] - 0.55, pos[1], pos[2] + 0.72],
+                                               textColorRGB=list(self.label_rgb), textSize=1.8,
+                                               replaceItemUniqueId=self.label_id)
         dist = float(pos[0] - self.start_pos[0])
         status = "FALLEN" if fell else "WALKING"
         txt = f"t {t:5.1f}s   dist {dist:5.2f} m   v {lin_vel[0]:4.2f} m/s   {status}"

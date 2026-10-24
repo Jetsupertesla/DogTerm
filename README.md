@@ -30,10 +30,11 @@ uses a prebuilt wheel or compiles from source with the Xcode command-line tools.
 ## Run
 
 ```bash
-python -m roboevolve.demo_walk                 # GUI, camera follows the robot
-python -m roboevolve.demo_walk --headless      # prints metrics as JSON
-python -m roboevolve.demo_walk --frequency 2.5 --step-height 0.04 --plot
-python -m roboevolve.demo_walk --fault-joint front_left_calf --fault-start 4   # live motor failure
+python -m roboevolve.demo_walk                 # GUI: SET 1 healthy (12 s), then SET 2 injured (20 s)
+python -m roboevolve.demo_walk --headless      # same two sets, metrics + before/after table
+python -m roboevolve.demo_walk --only healthy  # a single set
+python -m roboevolve.demo_walk --fault-joint front_left_calf --fault-strength 0.3   # milder injury
+python -m roboevolve.demo_walk --plot          # matplotlib: both sets' trajectories
 python -m pytest roboevolve/tests -s           # tests, with measured numbers printed
 ```
 
@@ -47,7 +48,12 @@ The GUI (`scene.py`) shows:
 
 The scene is visual-only: its objects have no collision and it is never built
 headless, so GUI and headless runs give identical results.
-`--hold N` keeps the window open for N seconds at the end.
+`--hold N` keeps each set's final frame on screen for N seconds (default 4).
+
+Demo sets:
+- **Set 2 (injury):** defaults to a dead front-left calf (`torque_loss`, strength 0) from t = 0. It runs the full 20 s even after a fall (`--injured-duration`, `--fault-start`, `--fault-strength`).
+- **Measured with default gait params:** healthy, 4.53 m in 12 s; injured, 0.80 m and a fall at 2.6 s.
+- **Milder injuries for comparison:** a calf at 30% strength still covers 7.6 m in 20 s, and thigh faults are mostly tolerated.
 
 ## Headless API
 
