@@ -155,7 +155,7 @@ res["final_cell"], res["all_succeeded"], res["trajectory"], res["telemetry"]   #
 | move | success | falls | error mean / max | time mean / max |
 |---|---|---|---|---|
 | FORWARD | 20/20 | 0 | 1.1 / 2.7 cm | 2.9 / 3.8 s |
-| BACK | 20/20 | 0 | 1.4 / 4.0 cm | 3.0 / 4.0 s |
+| BACK | 20/20 | 0 | 1.7 / 4.9 cm | 3.4 / 4.0 s |
 | LEFT | 20/20 | 0 | 1.9 / 2.8 cm | 3.6 / 4.0 s |
 | RIGHT | 20/20 | 0 | 2.1 / 4.0 cm | 3.5 / 4.3 s |
 
@@ -171,6 +171,10 @@ The worst final heading over these 80 moves is 0.022 rad (1.3°).
 - **Injured robot:**
   - A dead front-left calf falls about 2.4 s into the first move. The run reports FELL, and the remaining moves are not attempted.
   - At 30% calf strength, `F,L,B,R` still returns home (4/4 moves, 16 s).
+- **Backward stride is shortened to 0.8 for margin:**
+  - At full stride, BACK tipped over once in 6 seeds on CI's Ubuntu / Python 3.11 PyBullet build.
+  - Locally it passed 30/30 even with 0.05 rad noise.
+  - PyBullet results differ slightly between builds, so marginal gaits can pass on one machine and fail on another.
 
 ## Controller parameters
 

@@ -110,7 +110,8 @@ class GridMoveConfig:
     """
 
     cell_size_m: float = CELL_SIZE_M
-    forward_stride_scale: float = 1.0   # x stroke at full command (forward and back)
+    forward_stride_scale: float = 1.0   # +x stroke at full command
+    backward_stride_scale: float = 0.8  # -x stroke (1.0 tipped 1 of 6 seeds on CI's Linux build)
     lateral_stride_scale: float = 0.8   # y stroke at full command (1.2 tips; see README)
     yaw_stride_scale: float = 0.4       # per-leg tangential stroke at full yaw command
     yaw_gain: float = 4.0               # yaw command per rad of heading error
@@ -132,6 +133,7 @@ class GridMoveConfig:
 
     BOUNDS = {
         "forward_stride_scale": (0.0, 2.0),
+        "backward_stride_scale": (0.0, 2.0),
         "lateral_stride_scale": (0.0, 1.5),
         "yaw_stride_scale": (0.0, 1.0),
     }
@@ -267,7 +269,7 @@ class CellNavigator:
     def strokes(self) -> dict[str, tuple[float, float]]:
         """Per-leg stance strokes (body frame, m) for the current command."""
         cfg, (vx, vy, w) = self.cfg, self.stroke_cmd * self.amp
-        sx = BASE_STRIDE_M * cfg.forward_stride_scale * vx
+        sx = BASE_STRIDE_M * (cfg.forward_stride_scale if vx >= 0 else cfg.backward_stride_scale) * vx
         sy = BASE_STRIDE_M * cfg.lateral_stride_scale * vy
         sw = BASE_STRIDE_M * cfg.yaw_stride_scale * w
         out = {}
