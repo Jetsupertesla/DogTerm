@@ -118,3 +118,50 @@ def evaluate(samples, actuated_joints, config=EvaluationConfig(), *, torque_sour
                          and lateral <= config.max_lateral_deviation_m)
     result['score'] = score(result, weights)
     return result
+
+
+def evaluate_simulation_result(raw, config=EvaluationConfig(), weights=RewardWeights()):
+    """Adapt Task 1 columnar telemetry or canonical sample telemetry.
+
+    Task 1's recorder starts at 0.02s, lacks a guaranteed final sample and samples
+    torque at 50Hz. Evaluate ONLY the measured interval without invented endpoints.
+    Missing coverage prevents task success; energy is a sampled mechanical-work
+    estimate. Simulator's immediate fall termination is retained as a safety
+    event separately from independent sustained-posture detection.
+    """
+    telemetry = raw['telemetry']
+    if isinstance(telemetry, dict):
+        names = tuple(raw['motor_names'])
+        if not names or len(set(names)) != len(names):
+            raise ValueError('invalid motor_names')
+        count = len(telemetry['t'])
+        widths = {'base_pos': 3, 'rpy': 3, 'joint_vel': len(names), 'applied_torque': len(names)}
+        for key, width in widths.items():
+            if len(telemetry[key]) != count or any(len(row) != width for row in telemetry[key]):
+                raise ValueError(f'invalid telemetry shape: {key}')
+        samples = [dict(time_s=float(telemetry['t'][i]), position=telemetry['base_pos'][i],
+                        roll=float(telemetry['rpy'][i][0]), pitch=float(telemetry['rpy'][i][1]),
+                        torques=dict(zip(names, telemetry['applied_torque'][i])),
+                        angular_velocities=dict(zip(names, telemetry['joint_vel'][i]))) for i in range(count)]
+        source = 'applied'  # Task 1 documents getJointStates()[3] for position control.
+    else:
+        samples = list(telemetry)
+        names, source = raw['actuated_joints'], raw['torque_source']
+    metrics = evaluate(samples, names, config, torque_source=source, weights=weights)
+    start, end = samples[0]['time_s'], samples[-1]['time_s']
+    sim_time = raw.get('sim_time_s', end)
+    metrics['recording_start_time_s'] = start
+    metrics['recording_end_time_s'] = end
+    # The recorder logs after each control step, so the first sample may lag t=0 by one period.
+    metrics['covers_trial'] = start <= samples[1]['time_s'] - start + 1e-9 and abs(end - sim_time) <= 1e-9
+    metrics['task_completed'] = metrics['covers_trial'] and sim_time >= config.task_duration_s - 1e-9
+    metrics['simulator_fell'] = bool(raw.get('fell', False))
+    metrics['success'] = (metrics['task_completed'] and not metrics['fell'] and not metrics['simulator_fell']
+                          and metrics['forward_distance'] >= config.min_forward_distance_m
+                          and metrics['max_lateral_deviation_m'] <= config.max_lateral_deviation_m)
+    result = dict(raw)
+    result.update(distance_m=metrics['forward_distance'], avg_speed_m_s=metrics['average_forward_speed'],
+                  fell=metrics['fell'], fall_time_s=metrics['first_fall_time_s'], stability_rms_rad=metrics['tilt_rms'],
+                  energy_j=metrics['energy_j'], score=metrics['score'], score_is_placeholder=False,
+                  metrics=metrics, success=metrics['success'])
+    return result

@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import importlib
 import json
-from .evaluation import EvaluationConfig, RewardWeights, evaluate
+from .evaluation import EvaluationConfig, RewardWeights, evaluate_simulation_result
 
 
 def run_benchmark(simulate, controller_params, fault=None, seeds=(0, 1, 2), *, config=EvaluationConfig(), weights=RewardWeights()):
@@ -24,8 +24,7 @@ def run_benchmark(simulate, controller_params, fault=None, seeds=(0, 1, 2), *, c
         for label, scenario in [('healthy', None)] + ([('fault', fault)] if fault is not None else []):
             raw = simulate(controller_params=deepcopy(controller_params), fault=deepcopy(scenario),
                            seed=seed, duration_s=config.task_duration_s, gui=False)
-            metrics = evaluate(raw['telemetry'], raw['actuated_joints'], config,
-                               torque_source=raw['torque_source'], weights=weights)
+            metrics = evaluate_simulation_result(raw, config, weights)['metrics']
             runs.append(dict(scenario=label, seed=seed, fault=deepcopy(scenario), metrics=metrics))
     summaries = {}
     for label in dict.fromkeys(r['scenario'] for r in runs):

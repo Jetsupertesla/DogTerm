@@ -6,3 +6,5 @@ __pycache__/
 .env
 .env.*
 !.env.example
+scratch/
+pybullet_build.log

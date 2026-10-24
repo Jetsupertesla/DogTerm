@@ -1,12 +1,21 @@
 import math
 import unittest
-from roboevolve.evaluation import evaluate, EvaluationConfig, RewardWeights, score
+from roboevolve.evaluation import evaluate, evaluate_simulation_result, EvaluationConfig, RewardWeights, score
 from roboevolve.benchmark import run_benchmark
 
 
 def sample(t, x=0, y=0, z=.5, roll=0, pitch=0):
     return dict(time_s=t, position=(x,y,z), roll=roll, pitch=pitch,
                 torques={'motor': -2}, angular_velocities={'motor': 3})
+
+
+def columnar_raw(start_s, end_s, sim_time_s, period_s=0.02, speed=0.2):
+    """Simulation-style output: the recorder logs after each control step."""
+    count = round((end_s - start_s) / period_s) + 1
+    t = [start_s + i * period_s for i in range(count)]
+    return dict(motor_names=['motor'], sim_time_s=sim_time_s, fell=False,
+                telemetry=dict(t=t, base_pos=[(speed * ti, 0, .5) for ti in t], rpy=[(0, 0, 0)] * count,
+                               joint_vel=[(0,)] * count, applied_torque=[(0,)] * count))
 
 
 class EvaluationTests(unittest.TestCase):
@@ -57,3 +66,18 @@ class EvaluationTests(unittest.TestCase):
         metrics = report['runs'][0]['metrics']
         self.assertEqual(score(metrics, RewardWeights(1, 0, 0, 0)), 3)
         self.assertEqual(report, run_benchmark(simulate, params, {'joint': 'motor'}, seeds=[7, 8]))
+    def test_simulation_recording_first_sample_one_period_in_covers_trial(self):
+        metrics = evaluate_simulation_result(columnar_raw(0.02, 20.0, 20.0))['metrics']
+        self.assertTrue(metrics['covers_trial'])
+        self.assertTrue(metrics['task_completed'])
+        self.assertTrue(metrics['success'])
+    def test_simulation_recording_gaps_prevent_success(self):
+        late_start = evaluate_simulation_result(columnar_raw(1.0, 20.0, 20.0))['metrics']
+        early_end = evaluate_simulation_result(columnar_raw(0.02, 19.0, 20.0))['metrics']
+        short_trial = evaluate_simulation_result(columnar_raw(0.02, 10.0, 10.0))['metrics']
+        for metrics in (late_start, early_end):
+            self.assertFalse(metrics['covers_trial'])
+            self.assertFalse(metrics['success'])
+        self.assertTrue(short_trial['covers_trial'])
+        self.assertFalse(short_trial['task_completed'])
+        self.assertFalse(short_trial['success'])

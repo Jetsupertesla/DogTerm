@@ -100,3 +100,30 @@ class FaultInjector:
                 mode = physics.POSITION_CONTROL if command.mode == 'position' else physics.VELOCITY_CONTROL
                 physics.setJointMotorControl2(**args, controlMode=mode, force=command.max_torque, **{target_key: command.target})
         return applied
+
+
+def make_motor_hook(fault, rng=None):
+    """Task 1 factory: adapt its dataclass command list without importing physics.
+
+    Nominal torque capacities and URDF joint IDs are captured from the first
+    fresh controller commands. Commands are copied so limits never compound.
+    RNG is accepted for the shared interface; this fault is deterministic.
+    """
+    from dataclasses import replace
+    injector = None
+
+    def hook(commands, t):
+        nonlocal injector
+        names = [c.name for c in commands]
+        if len(set(names)) != len(names):
+            raise ValueError('duplicate motor commands')
+        mapping = {c.name: c.joint_index for c in commands}
+        if injector is None:
+            injector = FaultInjector(mapping, {c.name: c.max_torque for c in commands}, fault)
+        if mapping != injector.joints:
+            raise ValueError('joint mapping changed during trial')
+        bounded = injector.apply({c.name: MotorCommand('position', c.target_position, c.max_torque)
+                                 for c in commands}, t)
+        return [replace(c, max_torque=bounded[c.joint_index].max_torque) for c in commands]
+
+    return hook
